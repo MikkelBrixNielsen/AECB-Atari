@@ -2,7 +2,7 @@
 
 Devise an algorithm that learns to play Atari games from raw pixel observations in two steps:
 
-- i: Avector-quantized auto-encoder that maps observations to a discrete codebook space.
+- i: A vector-quantized auto-encoder that maps observations to a discrete codebook space.
 
 - ii: A planner that applies dynamic programming on a Markov Decision Process defined on the codebook space learned in the previous step.
 
