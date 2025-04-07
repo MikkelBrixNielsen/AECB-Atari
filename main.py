@@ -1,0 +1,38 @@
+import torch
+from model import VQVAE
+from torch import optim
+from utils import MemoryBuffer, VideoRecorder, make_log_dir, create_argparser, create_env, warmup, train_VQ_VAE, eval_model, plot_runs
+
+args = create_argparser()
+
+# some hyperparameters
+GAMMA = 0.99
+EPS_START = 1
+EPS_END = 0.05
+EPS_DECAY = 50000
+WARMUP = 1000
+
+# global variables 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") # If GPU is available use it - otherwise use the CPU
+LOG_DIR, LOG_PATH = make_log_dir(args)
+
+
+def main():
+    memory, video = MemoryBuffer(50000),  VideoRecorder(LOG_DIR) 
+    model, optimizer = VQVAE(), optim.Adam(model.parameters(), lr=args.lr)
+    seeds = [834920, 174635, 908172, 562349, 310786]
+
+    # list of runs 
+    for i in range(len(seeds)):
+        env = create_env(args.env_name, seeds[i], video=False)
+        warmup(env, memory, seeds[i], DEVICE, WARMUP)
+        train_VQ_VAE(model, memory, optimizer, args)
+
+        # Define MDP on codebook space
+        # Define and train a planar, which uses dynamic programming, on the MDP
+
+        # collect data for run and add it to list of runs
+    # plot data for list of runs
+    
+if __name__ == "__main__":
+    main()
