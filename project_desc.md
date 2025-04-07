@@ -4,7 +4,7 @@ Devise an algorithm that learns to play Atari games from raw pixel observations 
 
 - i: Avector-quantized auto-encoder that maps observations to a discrete codebook space.
 
-- ii: A plannerthat applies dynamic programming on a Markov Decision Process defined on the codebook spacelearned in the previous step.
+- ii: A planner that applies dynamic programming on a Markov Decision Process defined on the codebook space learned in the previous step.
 
 Evaluate your algorithm on at least three Atari games supported by the Gymnasium API. For vector quantization, you can take [van den Oort et al.,  2017] as basisor design your alternative approach. Replicate your experiments multiple times and report the evolution of the  evaluation-time total reward as a function of the gradient-descent steps. Your report should contain:
 
