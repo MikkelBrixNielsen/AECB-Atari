@@ -1,7 +1,7 @@
 import torch
 from model import VQVAE
 from torch import optim
-from utils import MemoryBuffer, VideoRecorder, make_log_dir, create_argparser, create_env, warmup, train_VQ_VAE, eval_model, plot_runs
+from utils import MDPBuilder, MemoryBuffer, VideoRecorder, make_log_dir, create_argparser, create_env, warmup, train_VQ_VAE, eval_model, plot_runs
 
 args = create_argparser()
 
@@ -29,6 +29,7 @@ def main():
         train_VQ_VAE(model, memory, optimizer, args)
 
         # Define MDP on codebook space
+        MDPBuilder(model.encoder, model.quantizer).build(memory.get_all_transitions())
         # Define and train a planar, which uses dynamic programming, on the MDP
 
         # collect data for run and add it to list of runs

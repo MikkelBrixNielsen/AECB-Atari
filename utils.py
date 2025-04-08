@@ -1,4 +1,3 @@
-from itertools import count
 import os
 import time
 import gymnasium as gym # type: ignore
@@ -6,10 +5,56 @@ import imageio # type: ignore
 import matplotlib.pyplot as plt
 from wrapper import AtariWrapper
 import torch.nn.functional as F
-from collections import namedtuple, deque
+from collections import namedtuple, deque, defaultdict, Counter
 import torch
 import random
 import argparse
+
+class MDPBuilder:
+    def __init__(self, encoder, quantizer):
+        self.encoder = encoder
+        self.quantizer = quantizer
+
+    def discretize(self, frame):
+        frame = frame.unsqueeze(0) # (1, 1, 84, 84)
+        with torch.no_grad():
+            z = self.encoder(frame)
+            _, _, indices = self.quantizer(z)
+            indices = indices.view(z.shape[2], z.shape[3]) # (H, W)
+
+        return tuple(indices.view(-1).cpu().numpy()) # hashable
+
+    def build(self, transitions):
+        transitions = defaultdict(Counter)  # (s, a) -> next_s -> count
+        rewards = defaultdict(float)        # (s, a) -> total_reward
+        dones = defaultdict(int)            # (s, a) -> # of terminal transitions
+        counts = defaultdict(int)           # (s, a) -> count
+
+        for s, a, sp, r, done in transitions:
+            ds = self.discretize(s)
+            dsp = self.discretize(sp)
+
+            transitions[(ds, a)][dsp] += 1
+            rewards[(ds, a)] += r
+            counts[(ds, a)] += 1
+            if done:
+                dones[(ds, a)] += 1
+
+        mdp = defaultdict(dict)
+
+        for (s, a), next_states in transitions.items():
+            total = sum(next_states.values())
+            prob_list = []
+
+            for s_prime, cnt in next_states.items():
+                prob = cnt / total
+                avg_reward = rewards[(s, a)] / counts[(s, a)]
+                done_prob = dones[(s, a)] / counts[(s, a)]
+                prob_list.append((prob, s_prime, avg_reward, done_prob > 0.5))
+
+            mdp[s][a] = prob_list
+
+        return mdp
 
 class VideoRecorder: # from previous project
     def __init__(self, dir_name, fps=30):
@@ -28,9 +73,10 @@ class VideoRecorder: # from previous project
         imageio.mimsave(path, self.frames, fps=self.fps, macro_block_size = None)
 
 Transition = namedtuple('Transition',
-                        ('state', 'action', 'next_state', 'reward'))
+                        ('state', 'action', 'next_state', 'reward', 'done'))
 
 class MemoryBuffer():
+    # Cyclic memory buffer
     def __init__(self, size):
         self.size = size
         self.memory = [None for _ in range(size)]
@@ -43,25 +89,14 @@ class MemoryBuffer():
     def sample(self, batch):
         return random.sample(self.memory, batch)
 
-def log_and_print(epoch, eps_threshold, steps_done, total_loss, total_reward, avg_loss, avg_reward, time, log_path): # from previous project
-        output = (f"Training epoch {epoch}: "
-                  f"Loss {total_loss:.2f}, "
-                  f"Avgloss {avg_loss:.2f}, "
-                  f"Reward {total_reward}, "
-                  f"Avgreward {avg_reward:.2f}, "
-                  f"Epsilon {eps_threshold:.2f}, "
-                  f"TotalStep {steps_done}, "
-                  f"Seconds elapsed {time:.2f}"
-                  )
+    def get_all(self):
+        return [t for t in self.memory if t]
 
-        print(output)
-        with open(log_path,"a") as f:
-            f.write(f"{output}\n")
-
-def convert_to_tensor(next_obs, action, reward, device):
+def convert_to_tensor(next_obs, action, reward, truncated, terminated, device):
     return (torch.from_numpy(next_obs).to(device).unsqueeze(0), # (1, 84, 84)
             torch.tensor([reward], device=device), # (1)
-            torch.tensor([action], device=device) # (1)
+            torch.tensor([action], device=device), # (1)
+            torch.tensor([truncated or terminated], device=device) # (1)
             )
 
 def warmup(env, memory, seed, device, warmup=1000): # modified method based on version of code from github
@@ -75,8 +110,8 @@ def warmup(env, memory, seed, device, warmup=1000): # modified method based on v
         while True:
             action = torch.tensor([[env.action_space.sample()]]).to(device)
             next_obs, _, terminated, truncated, _ = env.step(action.item())
-            next_obs, action, reward = convert_to_tensor(next_obs, action, reward, device)
-            memory.append(obs, action, next_obs, reward)
+            next_obs, action, reward, done = convert_to_tensor(next_obs, action, reward, truncated, terminated, device)
+            memory.append(obs, action, next_obs, reward, done)
 
             obs = next_obs
             warmupstep += 1
@@ -91,9 +126,9 @@ def sample_memory(memory, args):
     transitions = memory.sample(args.batch_size)
     batch = Transition(*zip(*transitions)) # batch-array of Transitions -> Transition of batch-arrays.
     return (torch.cat(batch.state), # state_batch (bs, 1, 84, 84)
-            torch.cat(batch.action), # next_state_batch (bs, 1, 84, 84)
+            torch.cat(batch.action), # action_batch (bs, 1, 84, 84)
             torch.cat(batch.next_state), # next_state_batch (bs, 1, 84, 84)
-            torch.cat(batch.reward), # next_state_batch (bs, 1, 84, 84)
+            torch.cat(batch.reward), # reward_batch (bs, 1, 84, 84)
     )
 
 def train_VQ_VAE(model, memory, optimizer, args):
@@ -114,6 +149,7 @@ def train_VQ_VAE(model, memory, optimizer, args):
         loss.backward()
         optimizer.step()
 
+        # FIXME: Make this into a methods which also logs to a file
         print(f"Epoch {epoch}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
     
 def train_planner():
