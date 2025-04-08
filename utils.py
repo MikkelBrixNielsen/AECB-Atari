@@ -7,6 +7,7 @@ from wrapper import AtariWrapper
 import torch.nn.functional as F
 from collections import namedtuple, deque, defaultdict, Counter
 import torch
+import numpy as np
 import random
 import argparse
 
@@ -151,12 +152,61 @@ def train_VQ_VAE(model, memory, optimizer, args):
 
         # FIXME: Make this into a methods which also logs to a file
         print(f"Epoch {epoch}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
-    
+
+def value_iteration(mdp, gamma=0.99, theta=1e-6):
+    V = defaultdict(float)
+    pi = {}
+
+    while True:
+        delta = 0
+        for state in mdp:
+            action_values = []
+            for action, outcomes in mdp[state].items():
+                value = 0
+                for prob, next_state, reward, done in outcomes:
+                    value += prob * (reward + gamma * V[next_state] * (not done))
+                action_values.append((value, action))
+
+            if action_values:
+                best_value, best_action = max(action_values)
+                delta = max(delta, abs(V[state] - best_value))
+                V[state] = best_value
+                pi[state] = best_action
+
+        if delta < theta:
+            break
+
+    return V, pi
+
+def select_action(model, obs, pi, device="cuda", num_actions=4):
+    model.eval()
+    with torch.no_grad():
+        if isinstance(obs, np.ndarray): # FIXME: CHECK IF NEEDED
+            obs = torch.tensor(obs, dtype=torch.float32) # FIXME: CHECK IF NEEDED
+        obs = obs.unsqueeze(0).to(device)  # (1, 1, 84, 84)
+        z = model.encoder(obs)
+        _, _, indices = model.quantizer(z)
+        indices = indices.view(z.shape[2], z.shape[3])
+        state = tuple(indices.view(-1).cpu().numpy())  # flatten to hashable tuple
+        return pi.get(state, random.randint(0, num_actions - 1))  # fallback
+
 def train_planner():
     pass
 
-def eval_planner():
-    pass
+def eval_planner(model, pi, env_name, seed, video, device):
+    env = create_env(env_name, seed, video=True)
+    obs, done = env.reset()
+    total_reward = 0
+
+    while not done:
+        obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)  # [1, 1, 84, 84]
+        action = select_action(obs_tensor, model, pi, device=device, num_actions=env.action_space.n)
+        obs, reward, done, _ = env.step(action)
+        total_reward += reward
+        video.capture_frame()
+
+    video.close()
+    print(f"Seed {seed} - total reward: {total_reward}")
 
 def create_argparser(): # modified from previous project
     parser = argparse.ArgumentParser()

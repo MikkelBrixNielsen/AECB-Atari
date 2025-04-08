@@ -1,12 +1,13 @@
 import torch
 from model import VQVAE
 from torch import optim
-from utils import MDPBuilder, MemoryBuffer, VideoRecorder, make_log_dir, create_argparser, create_env, warmup, train_VQ_VAE, eval_model, plot_runs
+from utils import MDPBuilder, MemoryBuffer, VideoRecorder, make_log_dir, create_argparser, create_env, warmup, train_VQ_VAE, eval_planner, value_iteration, plot_runs
 
 args = create_argparser()
 
 # some hyperparameters
 GAMMA = 0.99
+THETA = 1e-6
 EPS_START = 1
 EPS_END = 0.05
 EPS_DECAY = 50000
@@ -18,19 +19,18 @@ LOG_DIR, LOG_PATH = make_log_dir(args)
 
 
 def main():
-    memory, video = MemoryBuffer(50000),  VideoRecorder(LOG_DIR) 
-    model, optimizer = VQVAE(), optim.Adam(model.parameters(), lr=args.lr)
     seeds = [834920, 174635, 908172, 562349, 310786]
 
     # runs = [] # list of runs 
     for i in range(len(seeds)):
+        memory, video = MemoryBuffer(50000),  VideoRecorder(LOG_DIR) 
+        model, optimizer = VQVAE(), optim.Adam(model.parameters(), lr=args.lr)
         env = create_env(args.env_name, seeds[i], video=False)
         warmup(env, memory, seeds[i], DEVICE, WARMUP)
         train_VQ_VAE(model, memory, optimizer, args)
-
-        # Define MDP on codebook space
-        MDPBuilder(model.encoder, model.quantizer).build(memory.get_all_transitions())
-        # Define and train a planar, which uses dynamic programming, on the MDP
+        mdp = MDPBuilder(model.encoder, model.quantizer).build(memory.get_all())
+        _, pi = value_iteration(mdp, GAMMA, THETA)
+        eval_planner(model, pi, args.env_name, seeds[i], video, DEVICE)
 
         # collect data for run and add it to list of runs
     # plot data for list of runs
