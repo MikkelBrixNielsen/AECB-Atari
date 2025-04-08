@@ -22,7 +22,7 @@ def main():
     model, optimizer = VQVAE(), optim.Adam(model.parameters(), lr=args.lr)
     seeds = [834920, 174635, 908172, 562349, 310786]
 
-    # list of runs 
+    # runs = [] # list of runs 
     for i in range(len(seeds)):
         env = create_env(args.env_name, seeds[i], video=False)
         warmup(env, memory, seeds[i], DEVICE, WARMUP)
@@ -33,6 +33,7 @@ def main():
 
         # collect data for run and add it to list of runs
     # plot data for list of runs
+    # plot_runs(runs)
     
 if __name__ == "__main__":
     main()

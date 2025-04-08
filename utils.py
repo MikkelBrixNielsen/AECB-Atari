@@ -31,7 +31,7 @@ class VideoRecorder: # from previous project
                         # ('state', 'action', 'next_state', 'reward', 'done')) # from previous project
 
 Transition = namedtuple('Transition',
-                        ('state', 'next_state'))
+                        ('state', 'action', 'next_state', 'reward'))
 
 class MemoryBuffer():
     def __init__(self, size):
@@ -61,11 +61,11 @@ def log_and_print(epoch, eps_threshold, steps_done, total_loss, total_reward, av
         with open(log_path,"a") as f:
             f.write(f"{output}\n")
 
-# def convert_to_tensor(reward, done, obs, next_obs, device):
-#     return (torch.tensor([reward], device=device), # reward (1)
-#             torch.tensor([done], device=device), # done(1)
-#             torch.stack((torch.from_numpy(next_obs).to(device), obs[0][0], obs[0][1], obs[0][2])).unsqueeze(0) # (1, 4, 84, 84)
-#             )
+def convert_to_tensor(next_obs, action, reward, device):
+    return (torch.from_numpy(next_obs).to(device).unsqueeze(0), # (1, 84, 84)
+            torch.tensor([reward], device=device), # (1)
+            torch.tensor([action], device=device) # (1)
+            )
 
 def warmup(env, memory, seed, device, warmup=1000): # modified method based on version of code from github
     print("Warming up...")
@@ -77,13 +77,9 @@ def warmup(env, memory, seed, device, warmup=1000): # modified method based on v
 
         while True:
             action = torch.tensor([[env.action_space.sample()]]).to(device)
-            # next_obs, reward, terminated, truncated, _ = env.step(action.item())
-            # reward, done, next_obs = convert_to_tensor(reward, terminated or truncated, obs, next_obs, device)
-            # memory.append(obs, action, next_obs, reward, done)
-            
             next_obs, _, terminated, truncated, _ = env.step(action.item())
-            torch.from_numpy(next_obs).to(device).unsqueeze(0) # (1, 84, 84)
-            memory.append(obs, next_obs)
+            next_obs, action, reward = convert_to_tensor(next_obs, action, reward, device)
+            memory.append(obs, action, next_obs, reward)
 
             obs = next_obs
             warmupstep += 1
@@ -108,7 +104,9 @@ def sample_memory(memory, args):
     transitions = memory.sample(args.batch_size)
     batch = Transition(*zip(*transitions)) # batch-array of Transitions -> Transition of batch-arrays.
     return (torch.cat(batch.state), # state_batch (bs, 1, 84, 84)
+            torch.cat(batch.action), # next_state_batch (bs, 1, 84, 84)
             torch.cat(batch.next_state), # next_state_batch (bs, 1, 84, 84)
+            torch.cat(batch.reward), # next_state_batch (bs, 1, 84, 84)
     )
 
 def train_VQ_VAE(model, memory, optimizer, args):
@@ -118,7 +116,7 @@ def train_VQ_VAE(model, memory, optimizer, args):
     for epoch in range(args.epoch):
         st = time.time()
 
-        state_batch, next_state_batch = sample_memory(memory, args)
+        state_batch, _, next_state_batch, _  = sample_memory(memory, args)
         batch = torch.cat([state_batch, next_state_batch], dim=0) # (bs*2, 1, 84, 84)
 
         recon, vq_loss = model(batch)
@@ -131,7 +129,10 @@ def train_VQ_VAE(model, memory, optimizer, args):
 
         print(f"Epoch {epoch}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
     
-def eval_model():
+def train_planner():
+    pass
+
+def eval_planner():
     pass
 
 def create_argparser(): # modified from previous project
