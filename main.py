@@ -38,3 +38,10 @@ def main():
     
 if __name__ == "__main__":
     main()
+
+
+# TODO: logging of training for planner
+# TODO: logging of traininig for VQ-VAE
+# TODO: collect data to plot reward, loss, avg reward and avg loss for each seeded run
+# TODO: test shit and see if it works
+# TODO: sikkert rette en masse fejl :P

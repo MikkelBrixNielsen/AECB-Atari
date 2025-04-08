@@ -1,5 +1,6 @@
 import os
 import time
+from itertools import count
 import gymnasium as gym # type: ignore
 import imageio # type: ignore
 import matplotlib.pyplot as plt
@@ -195,17 +196,22 @@ def train_planner():
 
 def eval_planner(model, pi, env_name, seed, video, device):
     env = create_env(env_name, seed, video=True)
-    obs, done = env.reset()
+    obs, done = env.reset(seed)
     total_reward = 0
+    video.reset()
 
-    while not done:
-        obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)  # [1, 1, 84, 84]
+    for epoch in count():
+        obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)  # (1, 1, 84, 84)
         action = select_action(obs_tensor, model, pi, device=device, num_actions=env.action_space.n)
         obs, reward, done, _ = env.step(action)
         total_reward += reward
-        video.capture_frame()
 
-    video.close()
+        if done:
+            break
+    
+    env.close()
+    video.save(f"eval_{total_reward}.mp4")
+    
     print(f"Seed {seed} - total reward: {total_reward}")
 
 def create_argparser(): # modified from previous project
