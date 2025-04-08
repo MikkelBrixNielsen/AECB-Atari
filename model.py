@@ -9,11 +9,11 @@ class Encoder(nn.Module):
     def __init__(self, in_channels=1, latent_dim=64):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Conv2d(in_channels, 32, 4, 2, 1),  # 42x42
+            nn.Conv2d(in_channels=in_channels, out_channels=32, kernel_size=4, stride=2, padding=1),  # 42x42
             nn.ReLU(),
-            nn.Conv2d(32, 64, 4, 2, 1),           # 21x21
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2, padding=1),           # 21x21
             nn.ReLU(),
-            nn.Conv2d(64, latent_dim, 3, 1, 1)    # 21x21
+            nn.Conv2d(in_channels=64, out_channels=latent_dim, kernel_size=3, stride=1, padding=1)    # 21x21
         )
 
     def forward(self, x):
@@ -23,11 +23,11 @@ class Decoder(nn.Module):
     def __init__(self, latent_dim=64, out_channels=1):
         super().__init__()
         self.net = nn.Sequential(
-            nn.ConvTranspose2d(latent_dim, 64, 4, 2, 1),  # 42x42
+            nn.ConvTranspose2d(in_channels=latent_dim, out_channels=64, kernel_size=4, stride=2, padding=1),  # 42x42
             nn.ReLU(),
-            nn.ConvTranspose2d(64, 32, 4, 2, 1),          # 84x84
+            nn.ConvTranspose2d(in_channels=64, out_channels=32, kernel_size=4, stride=2, padding=1),          # 84x84
             nn.ReLU(),
-            nn.Conv2d(32, out_channels, 3, 1, 1),
+            nn.Conv2d(in_channels=32, out_channels=out_channels, kernel_size=3, stride=1, padding=1),
             nn.Sigmoid()
         )
 
