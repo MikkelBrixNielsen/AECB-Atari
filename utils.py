@@ -27,9 +27,6 @@ class VideoRecorder: # from previous project
         path = os.path.join(self.dir_name, file_name)
         imageio.mimsave(path, self.frames, fps=self.fps, macro_block_size = None)
 
-# Transition = namedtuple('Transition',
-                        # ('state', 'action', 'next_state', 'reward', 'done')) # from previous project
-
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
 
@@ -89,16 +86,6 @@ def warmup(env, memory, seed, device, warmup=1000): # modified method based on v
 
         if warmupstep > warmup:
             break
-
-# def sample_memory(memory, args):
-#     transitions = memory.sample(args.batch_size)
-#     batch = Transition(*zip(*transitions)) # batch-array of Transitions -> Transition of batch-arrays.
-#     return (torch.cat(batch.state), # state_batch (bs, 1, 84, 84)
-#             torch.cat(batch.next_state), # next_state_batch (bs, 1, 84, 84)
-#             torch.cat(batch.action), # action_batch (bs, 1)
-#             torch.cat(batch.reward).unsqueeze(1), # reward_batch (bs, 1)
-#             torch.cat(batch.done).unsqueeze(1), # done_batch (bs, 1)
-#     )
 
 def sample_memory(memory, args):
     transitions = memory.sample(args.batch_size)
@@ -167,6 +154,6 @@ def make_log_dir(args): # modified from previous project
     log_path = os.path.join(log_dir, "log.txt")
     return log_dir, log_path
 
-def plot_runs(res_runs, log_dir):
+def plot_runs(runs, log_dir):
     # FIXME make plot and save it in corresponding directory
     pass
