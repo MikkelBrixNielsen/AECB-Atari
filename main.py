@@ -20,9 +20,7 @@ LOG_DIR, LOG_PATH = make_log_dir(args)
 
 
 def main():
-    # seeds = [834920, 174635, 908172, 562349, 310786]
-    seeds = [834920]
-
+    seeds = [834920, 174635, 908172, 562349, 310786]
 
     # runs = [] # list of runs 
     for i in range(len(seeds)):

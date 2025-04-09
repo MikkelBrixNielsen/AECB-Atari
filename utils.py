@@ -136,7 +136,7 @@ def sample_memory(memory, args):
             torch.cat(batch.reward).unsqueeze(1), # reward_batch (bs, 1, 84, 84)
     )
 
-def train_VQ_VAE(model, memory, optimizer, args, delta=1, eta=1):# delta=2e-3, eta=5e-3):
+def train_VQ_VAE(model, memory, optimizer, args, delta=2e-3, eta=5e-3):
     # FIXME Maybe include some performance / loss tracking?
     model.train()
 
