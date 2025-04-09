@@ -24,13 +24,14 @@ def main():
 
     # runs = [] # list of runs 
     for i in range(len(seeds)):
+        total_steps = 0
         memory, video = MemoryBuffer(50000), VideoRecorder(LOG_DIR) 
-        model = VQVAE()
-        optimizer = optim.Adam(model.parameters(), lr=args.lr)
         env, n_action, _, _  = create_env(args.env_name, seeds[i], video=False)
         warmup(env, memory, seeds[i], DEVICE, WARMUP)
 
         for epoch in range(args.epoch):
+            model = VQVAE()
+            optimizer = optim.Adam(model.parameters(), lr=args.lr)
             print(f"epoch: {epoch}")
             train_VQ_VAE(model, memory, optimizer, args)
             mdp = MDPBuilder(model.encoder, model.quantizer).build(memory.get_all())
@@ -39,7 +40,9 @@ def main():
             if epoch % args.eval_cycle == 0:
                 eval_planner(model, pi, args.env_name, n_action, seeds[i], video, DEVICE, epoch, LOG_DIR)
             
-            interact_with_env(model, pi, env, n_action, memory, seeds[i], DEVICE)
+            total_steps += interact_with_env(model, pi, env, n_action, memory, seeds[i], DEVICE)
+            print(f"mem length: {len(memory)}")
+            print(f"Steps taken: {total_steps}")
 
             print(f"MAYBE SOME OTHER TRACKING / LOGGING STUFF")
 

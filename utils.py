@@ -87,7 +87,7 @@ class MemoryBuffer():
     def append(self, *args):
         if len(self.memory) < self.size: # less than self.size elements in buffer fill it
             self.memory.append(Transition(*args))
-        else: # equal to or more have cyclicy behaviour
+        else: # len(self.memory) equal >= self.size -> have cyclic behaviour
             self.memory[self.ptr] = Transition(*args)
             self.ptr = (self.ptr + 1) % self.size
 
@@ -95,7 +95,10 @@ class MemoryBuffer():
         return random.sample(self.memory, batch)
 
     def get_all(self):
-        return [t for t in self.memory if t]
+        return self.memory
+    
+    def __len__(self):
+        return len(self.memory)
 
 def convert_to_tensor(next_obs, action, reward, truncated, terminated, device):
     return (torch.from_numpy(next_obs).to(device).unsqueeze(0), # (1, 84, 84)
@@ -136,14 +139,14 @@ def sample_memory(memory, args):
             torch.cat(batch.reward).unsqueeze(1), # reward_batch (bs, 1, 84, 84)
     )
 
-def train_VQ_VAE(model, memory, optimizer, args, delta=2e-3, eta=5e-3):
+def train_VQ_VAE(model, memory, optimizer, args, delta=5e-3, eta=5e-2):
     # FIXME Maybe include some performance / loss tracking?
     model.train()
 
     for iteration in count():
         st = time.time()
 
-        state_batch, _, next_state_batch, _  = sample_memory(memory, args)
+        state_batch, _, next_state_batch, _ = sample_memory(memory, args)
         batch = torch.cat([state_batch, next_state_batch], dim=0) # (bs*2, 1, 84, 84)
         recon, vq_loss = model(batch)
         recon_loss = F.mse_loss(recon, batch)
@@ -211,8 +214,9 @@ def eval_planner(model, pi, env_name, n_action, seed, video, device, epoch, log_
     env.close()
 
     subdir = f"seed_{seed}"
-    if not os.path.exists(subdir):
-        os.makedirs(subdir)
+    full_path = os.path.join(log_dir, subdir)
+    if not os.path.exists(full_path):
+        os.makedirs(full_path)
 
     filename = f"eval_{total_reward}_{epoch}.mp4"
     video.save(os.path.join(subdir, filename))
@@ -224,15 +228,19 @@ def interact_with_env(model, pi, env, n_action, memory, seed, device):
     obs, _ = env.reset(seed=seed)
     obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)  # (1, 1, 84, 84)
 
+    steps = 0
     while True:
         action = select_action(model, obs_tensor, pi, n_action)
         next_obs, reward, terminated, truncated, info = env.step(action)
         next_obs_tensor, reward_tensor, action_tensor, done_tensor = convert_to_tensor(next_obs, action, reward, truncated, terminated, device)
         memory.append(obs_tensor, action_tensor, next_obs_tensor, reward_tensor, done_tensor)
         obs_tensor = next_obs_tensor
+        steps += 1
 
         if info["lives"] == 0:
             break
+
+    return steps
 
 def create_argparser(): # modified from previous project
     parser = argparse.ArgumentParser()
