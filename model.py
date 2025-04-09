@@ -66,9 +66,9 @@ class VectorQuantizer(nn.Module):
         # NOTE - ".detach()" implements the use of stop-gradient "sg[]" (I THINK, MAYBE VERIFY - FIXME) 
         # NOTE - reduction='sum' makes mse_loss calculate the sum of squared differences (which follows the learning objective) 
         # NOTE - using reduction='mean' (default) provides additional normalization (calculates the mean squared error instead) 
-        e_loss = F.mse_loss(quantized.detach(), x, reduction='sum') # e_loss = ∥ z_e(x) − sg[e] ∥^2 
+        e_loss = F.mse_loss(quantized.detach(), x, reduction='mean') # e_loss = ∥ z_e(x) − sg[e] ∥^2 
         #e_loss = F.mse_loss(quantized.detach(), x) # uses reduction='mean'
-        q_loss = F.mse_loss(quantized, x.detach(), reduction='sum') # q_loss = ∥ sg[z_e(x)] − e ∥^2 
+        q_loss = F.mse_loss(quantized, x.detach(), reduction='mean') # q_loss = ∥ sg[z_e(x)] − e ∥^2 
         #q_loss = F.mse_loss(quantized, x.detach()) # uses reduction='mean'
         loss = q_loss + self.commitment_cost * e_loss # q_loss + β * e_loss
         
