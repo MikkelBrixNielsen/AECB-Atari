@@ -149,7 +149,7 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=5e-3, eta=5e-2):
         state_batch, _, next_state_batch, _ = sample_memory(memory, args)
         batch = torch.cat([state_batch, next_state_batch], dim=0) # (bs*2, 1, 84, 84)
         recon, vq_loss = model(batch)
-        recon_loss = F.mse_loss(recon, batch)
+        recon_loss = F.mse_loss(recon, batch, reduction='mean')
         loss = recon_loss + vq_loss
 
         optimizer.zero_grad()
