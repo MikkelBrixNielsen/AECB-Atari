@@ -24,7 +24,7 @@ def main():
 
     # runs = [] # list of runs 
     for i in range(len(seeds)):
-        total_steps = 0
+        total_steps = WARMUP
         memory, video = MemoryBuffer(50000), VideoRecorder(LOG_DIR) 
         env, n_action, _, _  = create_env(args.env_name, seeds[i], video=False)
         warmup(env, memory, seeds[i], DEVICE, WARMUP)
