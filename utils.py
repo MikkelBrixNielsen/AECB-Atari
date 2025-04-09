@@ -136,11 +136,11 @@ def sample_memory(memory, args):
             torch.cat(batch.reward).unsqueeze(1), # reward_batch (bs, 1, 84, 84)
     )
 
-def train_VQ_VAE(model, memory, optimizer, args):
+def train_VQ_VAE(model, memory, optimizer, args, delta=1, eta=1):# delta=2e-3, eta=5e-3):
     # FIXME Maybe include some performance / loss tracking?
     model.train()
 
-    for epoch in range(args.epoch):
+    for iteration in count():
         st = time.time()
 
         state_batch, _, next_state_batch, _  = sample_memory(memory, args)
@@ -154,7 +154,10 @@ def train_VQ_VAE(model, memory, optimizer, args):
         optimizer.step()
 
         # FIXME: Make this into a methods which also logs to a file
-        print(f"Epoch {epoch}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
+        print(f"\tIteration {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
+
+        if recon_loss < delta and vq_loss < eta: # if convergence => break
+            break
 
 def value_iteration(mdp, gamma=0.99, theta=1e-6):
     V = defaultdict(float)
@@ -191,12 +194,35 @@ def select_action(model, obs, pi, n_action):
         state = tuple(indices.view(-1).cpu().numpy())  # flatten to hashable tuple
         return pi.get(state, random.randint(0, n_action - 1))  # fallback
 
-def eval_planner(model, pi, env_name, n_action, seed, memory, video, device):
-    # evaluates planer and collects more samples for memory buffer
+def eval_planner(model, pi, env_name, n_action, seed, video, device, epoch, log_dir):
     env, _, obs, info = create_env(env_name, seed, video=video)
-    obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)  # (1, 1, 84, 84)
     total_reward = 0
     video.reset()
+
+    while True:
+        obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)  # (1, 1, 84, 84)
+        action = select_action(model, obs_tensor, pi, n_action)
+        obs, reward, _, _, info = env.step(action)
+        total_reward += reward
+
+        if info["lives"] == 0:
+            break
+    
+    env.close()
+
+    subdir = f"seed_{seed}"
+    if not os.path.exists(subdir):
+        os.makedirs(subdir)
+
+    filename = f"eval_{total_reward}_{epoch}.mp4"
+    video.save(os.path.join(subdir, filename))
+
+    print(f"\tSeed {seed} - total reward: {total_reward}")
+
+def interact_with_env(model, pi, env, n_action, memory, seed, device):
+    # collects new samples from evn based on pi and appends them to memory buffer
+    obs, _ = env.reset(seed=seed)
+    obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)  # (1, 1, 84, 84)
 
     while True:
         action = select_action(model, obs_tensor, pi, n_action)
@@ -204,15 +230,9 @@ def eval_planner(model, pi, env_name, n_action, seed, memory, video, device):
         next_obs_tensor, reward_tensor, action_tensor, done_tensor = convert_to_tensor(next_obs, action, reward, truncated, terminated, device)
         memory.append(obs_tensor, action_tensor, next_obs_tensor, reward_tensor, done_tensor)
         obs_tensor = next_obs_tensor
-        total_reward += reward
 
         if info["lives"] == 0:
             break
-    
-    env.close()
-    video.save(f"eval_{seed}_{total_reward}.mp4")
-    
-    print(f"Seed {seed} - total reward: {total_reward}")
 
 def create_argparser(): # modified from previous project
     parser = argparse.ArgumentParser()
@@ -220,7 +240,7 @@ def create_argparser(): # modified from previous project
     parser.add_argument('--lr', default=2.5e-4, type=float, help="learning rate")
     parser.add_argument('--epoch', default=10001, type=int, help="training epoch")
     parser.add_argument('--batch-size', default=32, type=int, help="batch size")
-    # parser.add_argument('--eval-cycle', default=500, type=int, help="evaluation cycle")
+    parser.add_argument('--eval-cycle', default=500, type=int, help="evaluation cycle")
     return parser.parse_args()
 
 def create_env(game, seed, video=None): # from previous project
