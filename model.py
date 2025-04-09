@@ -78,11 +78,6 @@ class VectorQuantizer(nn.Module):
         # quantized output z_q(x), quantization loss, indicies of chosen codebook vectors
         return quantized, loss, indices 
 
-        loss = q_loss + self.commitment_cost * e_loss
-
-        quantized = x + (quantized - x).detach()  # straight-through estimator
-        return quantized, loss, indices
-
 class VQVAE(nn.Module):
     def __init__(self, latent_dim=64, num_embeddings=512, commitment_cost=0.25):
         super().__init__()
