@@ -44,23 +44,40 @@ class VectorQuantizer(nn.Module):
         self.embeddings.weight.data.uniform_(-1/num_embeddings, 1/num_embeddings)
 
     def forward(self, x):
-        # Flatten to (BHW, C)
+        # Reshape input
         x_perm = x.permute(0, 2, 3, 1).contiguous()  # [B, H, W, C]
-        flat = x_perm.view(-1, self.embedding_dim)
+        flat = x_perm.view(-1, self.embedding_dim) # Flatten to (BHW, C)
 
-        # Compute distances
+        # Distance computation
         dist = (
             flat.pow(2).sum(1, keepdim=True)
             - 2 * flat @ self.embeddings.weight.T
             + self.embeddings.weight.pow(2).sum(1)
         )
+
+        # Vector quantization
         indices = torch.argmin(dist, dim=1)
         quantized = self.embeddings(indices).view(x_perm.shape)
         quantized = quantized.permute(0, 3, 1, 2).contiguous()  # back to [B, C, H, W]
 
-        # Losses
-        e_loss = F.mse_loss(quantized.detach(), x)
-        q_loss = F.mse_loss(quantized, x.detach())
+        # Computing quantization losses (∥sg[z_e(x)]−e∥^2 + β∥z_e(x)−sg[e]∥^2) 
+        # implemented w.r.t the training objective of equation (3) from van den Oord: log p(x∣z_q(x)) + ∥sg[z_e(x)]−e∥^2 + β∥z_e(x)−sg[e]∥^2
+        # NOTE this is in the quantization layer, so the reconstruction loss, log p(x∣z_q(x)), is added before backpropagation in train_VQ_VAE
+        # NOTE - ".detach()" implements the use of stop-gradient "sg[]" (I THINK, MAYBE VERIFY - FIXME) 
+        # NOTE - reduction='sum' makes mse_loss calculate the sum of squared differences (which follows the learning objective) 
+        # NOTE - using reduction='mean' (default) provides additional normalization (calculates the mean squared error instead) 
+        e_loss = F.mse_loss(quantized.detach(), x, reduction='sum') # e_loss = ∥ z_e(x) − sg[e] ∥^2 
+        #e_loss = F.mse_loss(quantized.detach(), x) # uses reduction='mean'
+        q_loss = F.mse_loss(quantized, x.detach(), reduction='sum') # q_loss = ∥ sg[z_e(x)] − e ∥^2 
+        #q_loss = F.mse_loss(quantized, x.detach()) # uses reduction='mean'
+        loss = q_loss + self.commitment_cost * e_loss # q_loss + β * e_loss
+        
+        # NOTE - apparently this lets gradients flow through the quantization step
+        quantized = x + (quantized - x).detach() # straight-through estimator
+
+        # quantized output z_q(x), quantization loss, indicies of chosen codebook vectors
+        return quantized, loss, indices 
+
         loss = q_loss + self.commitment_cost * e_loss
 
         quantized = x + (quantized - x).detach()  # straight-through estimator
