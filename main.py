@@ -19,18 +19,23 @@ LOG_DIR, LOG_PATH = make_log_dir(args)
 
 
 def main():
-    seeds = [834920, 174635, 908172, 562349, 310786]
+    # seeds = [834920, 174635, 908172, 562349, 310786]
+    seeds = [834920]
+
 
     # runs = [] # list of runs 
     for i in range(len(seeds)):
-        memory, video = MemoryBuffer(50000),  VideoRecorder(LOG_DIR) 
-        model, optimizer = VQVAE(), optim.Adam(model.parameters(), lr=args.lr)
-        env = create_env(args.env_name, seeds[i], video=False)
+        memory, video = MemoryBuffer(50000), VideoRecorder(LOG_DIR) 
+        model = VQVAE()
+        optimizer = optim.Adam(model.parameters(), lr=args.lr)
+        env, n_action, _, _  = create_env(args.env_name, seeds[i], video=False)
         warmup(env, memory, seeds[i], DEVICE, WARMUP)
+
+        # repeat FIXME: MAKE THIS A PART OF THE TRAINING LOOP
         train_VQ_VAE(model, memory, optimizer, args)
         mdp = MDPBuilder(model.encoder, model.quantizer).build(memory.get_all())
         _, pi = value_iteration(mdp, GAMMA, THETA)
-        eval_planner(model, pi, args.env_name, seeds[i], video, DEVICE)
+        eval_planner(model, pi, args.env_name, n_action, seeds[i], memory, video, DEVICE)
 
         # collect data for run and add it to list of runs
     # plot data for list of runs
