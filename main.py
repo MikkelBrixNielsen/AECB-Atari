@@ -8,11 +8,10 @@ args = create_argparser()
 
 # some hyperparameters
 GAMMA = 0.99
-THETA = 1e-6
-EPS_START = 1
-EPS_END = 0.05
-EPS_DECAY = 50000
-WARMUP = 1000
+EPS_START = 1 # NOT USED 
+EPS_END = 0.05 # NOT USED
+EPS_DECAY = 50000 # NOT USED
+WARMUP = 5000
 
 # global variables 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") # If GPU is available use it - otherwise use the CPU
@@ -35,7 +34,7 @@ def main():
             print(f"epoch: {epoch}")
             train_VQ_VAE(model, memory, optimizer, args)
             mdp = MDPBuilder(model.encoder, model.quantizer).build(memory.get_all())
-            _, pi = value_iteration(mdp, GAMMA, THETA)
+            _, pi = value_iteration(mdp, GAMMA)
             
             if epoch % args.eval_cycle == 0:
                 eval_planner(model, pi, args.env_name, n_action, seeds[i], video, DEVICE, epoch, LOG_DIR)
