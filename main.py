@@ -59,3 +59,4 @@ if __name__ == "__main__":
 # TODO: test shit and see if it works
 # TODO: sikkert rette en masse fejl :P
 # TODO: check for effective codebook usage by assessing distribution of "indicies" (model.quantizer.forward()[2])
+# TODO: test with higher num_embeddings (i think its effective for increasing performance at a cost of increased training time)
