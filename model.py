@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 class Encoder(nn.Module):
-    def __init__(self, in_channels=1, latent_dim=64):
+    def __init__(self, in_channels=4, latent_dim=64):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(in_channels=in_channels, out_channels=32, kernel_size=4, stride=2, padding=1),  # 42x42
@@ -20,7 +20,7 @@ class Encoder(nn.Module):
         return self.net(x)
 
 class Decoder(nn.Module):
-    def __init__(self, latent_dim=64, out_channels=1):
+    def __init__(self, latent_dim=64, out_channels=4):
         super().__init__()
         self.net = nn.Sequential(
             nn.ConvTranspose2d(in_channels=latent_dim, out_channels=64, kernel_size=4, stride=2, padding=1),  # 42x42
@@ -66,8 +66,11 @@ class VectorQuantizer(nn.Module):
         # NOTE - ".detach()" implements the use of stop-gradient "sg[]" (I THINK, MAYBE VERIFY - FIXME) 
         # NOTE - reduction='sum' makes mse_loss calculate the sum of squared differences (which follows the learning objective) 
         # NOTE - reduction='mean' (default) provides additional normalization (calculates the mean squared error instead) 
-        e_loss = F.mse_loss(quantized.detach(), x, reduction='mean') # e_loss = ∥ z_e(x) − sg[e] ∥^2 
-        q_loss = F.mse_loss(quantized, x.detach(), reduction='mean') # q_loss = ∥ sg[z_e(x)] − e ∥^2 
+        # e_loss = F.mse_loss(quantized.detach(), x, reduction='mean') # e_loss = ∥ z_e(x) − sg[e] ∥^2 
+        # q_loss = F.mse_loss(quantized, x.detach(), reduction='mean') # q_loss = ∥ sg[z_e(x)] − e ∥^2
+        e_loss = F.mse_loss(quantized.detach(), x, reduction='sum') # e_loss = ∥ z_e(x) − sg[e] ∥^2 
+        q_loss = F.mse_loss(quantized, x.detach(), reduction='sum') # q_loss = ∥ sg[z_e(x)] − e ∥^2
+
         loss = q_loss + self.commitment_cost * e_loss # q_loss + β * e_loss
         
         # NOTE - apparently this lets gradients flow through the quantization step
