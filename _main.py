@@ -14,7 +14,7 @@ GAMMA = 0.99
 EPS_START = 1-.5
 EPS_END = 0.05
 EPS_DECAY = 50000
-WARMUP = 10000
+WARMUP = 5000
 
 # global variables 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") # If GPU is available use it - otherwise use the CPU
@@ -23,7 +23,7 @@ LOG_DIR, LOG_PATH = make_log_dir(args)
 
 def main():
     seeds = [834920, 174635, 908172, 562349, 310786]
-    episodes = 10 # number of games the newly calculated policy should play before resuming training
+    episodes = 25 # number of games the newly calculated policy should play before resuming training
 
     # runs = [] # list of runs 
     #for i in range(len(seeds)):
@@ -33,10 +33,25 @@ def main():
         env, n_action, _, _  = create_env(args.env_name, seeds[i], video=False)
         warmup(env, memory, seeds[i], DEVICE, WARMUP)
 
+        # DEBUGGING STUFF TO JUST SEE AN INPUT IMAGE
+        #lol = torch.stack([state.squeeze(0) for state, *_ in memory.sample(1)]).unsqueeze(1).to(DEVICE)
+        #print(lol)
+        #lol = lol[:, :, 31:, 5:79] # initial playing area no borders no blocks only ball and paddle yay
+        #grid_lol = vutils.make_grid(lol, nrow=2, normalize=True, scale_each=True)
+        #plt.figure(figsize=(2,2))
+        #plt.imshow(grid_lol.permute(1, 2, 0).cpu().numpy())
+        #plt.title("xd")
+        #plt.axis('off')
+        #plt.show()
+        #print("what the flip")
+        
+        model = VQVAE()
+        model.to(DEVICE) # chatGPT said add this - i think it might matter when using GPU and CPU, but if only CPU it prolly makes no difference
+
         #for epoch in range(args.epoch):
-        for epoch in range(1):
-            model = VQVAE()
-            model.to(DEVICE) # chatGPT said add this - i think it might matter when using GPU and CPU, but if only CPU it prolly makes no difference
+        for epoch in range(1000):
+            #model = VQVAE()
+            #model.to(DEVICE) # chatGPT said add this - i think it might matter when using GPU and CPU, but if only CPU it prolly makes no difference
             optimizer = optim.Adam(model.parameters(), lr=args.lr)
             print(f"epoch: {epoch}")
             train_VQ_VAE(model, memory, optimizer, args)
@@ -47,10 +62,11 @@ def main():
             if epoch % 1 == 0:
                 eval_planner(model, pi, args.env_name, n_action, seeds[i], video, DEVICE, epoch, LOG_DIR)
                 with torch.no_grad():
-                    batch = torch.stack([state.squeeze(0) for state, *_ in memory.sample(64)]).unsqueeze(1).to(DEVICE)
+                    #batch = torch.stack([state.squeeze(0) for state, *_ in memory.sample(args.batch_size)]).unsqueeze(1).to(DEVICE)
+                    batch = torch.stack([state.squeeze(0) for state, *_ in memory.sample(16)]).unsqueeze(1).to(DEVICE)
                     recon, _ = model(batch)
 
-                    # stack batch and reconstructed images (2x64) into a single 16x8 image grid
+                    # stack batch and reconstructed images (2x16) into a single 8x4 image grid
                     #grid = vutils.make_grid(torch.cat([batch, recon], dim=0), nrow=8, normalize=True, scale_each=True)
                     #plt.figure(figsize=(12, 6))
                     #plt.imshow(grid_batch.permute(1, 2, 0).cpu().numpy())
@@ -58,16 +74,16 @@ def main():
                     #plt.axis('off')
                     #plt.savefig(f'log_reconstruction_images/epoch_{epoch}')
 
-                    # 64 batch images in an 8x8 image grid
-                    grid_batch = vutils.make_grid(batch, nrow=8, normalize=True, scale_each=True)
+                    # 16 batch images in an 4x4 image grid
+                    grid_batch = vutils.make_grid(batch, nrow=4, normalize=True, scale_each=True)
                     plt.figure(figsize=(12, 6))
                     plt.imshow(grid_batch.permute(1, 2, 0).cpu().numpy())
                     plt.title("Input (top) vs. Reconstruction (bottom)")
                     plt.axis('off')
                     plt.savefig(f'log_reconstruction_images/epoch_{epoch}_input')
 
-                    # reconstructed versions of the 64 batch images in an 8x8 image grid
-                    grid_recon = vutils.make_grid(recon, nrow=8, normalize=True, scale_each=True)
+                    # reconstructed versions of the 16 batch images in an 4x4 image grid
+                    grid_recon = vutils.make_grid(recon, nrow=4, normalize=True, scale_each=True)
                     plt.figure(figsize=(12, 6))
                     plt.imshow(grid_recon.permute(1, 2, 0).cpu().numpy())
                     plt.title("Input (top) vs. Reconstruction (bottom)")

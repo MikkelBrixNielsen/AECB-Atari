@@ -140,7 +140,7 @@ def sample_memory(memory, args):
     )
 
 #def train_VQ_VAE(model, memory, optimizer, args, delta=5e-3, eta=5e-2):
-def train_VQ_VAE(model, memory, optimizer, args, delta=0.005, eta=0.005):
+def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005):
     # FIXME Maybe include some performance / loss tracking?
     model.train()
 
@@ -151,12 +151,13 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=0.005, eta=0.005):
         batch = torch.cat([state_batch, next_state_batch], dim=0) # (bs*2, 1, 84, 84)
         recon, vq_loss = model(batch)
         
-        #recon_loss = F.mse_loss(recon, batch, reduction='mean')
+        #recon_loss = F.mse_loss(recon, batch, reduction='mean') # STANDARD/DEFAULT LOSS CALCULATION BASED ON VQ-VAE ARTICLE THING
 
         # WEIGHTED VERSION OF MSE_LOSS ^
         weights = torch.ones_like(batch)
         # boost importance of center-bottom area: rows 42–83, columns 8–76 (inclusive)
-        weights[:, :, 42:, 8:77] *= 40.0 # FIXME: DETERMINE PROPER IMPORTANCE BOOST FOR LOWER HALF OF IMAGE
+        weights[:, :, 31:, 5:79] *= 500.0 # FIXME: DETERMINE PROPER IMPORTANCE BOOST FOR LOWER HALF OF IMAGE
+
         recon_loss = ((recon - batch) ** 2 * weights).mean()
         # THIS SHOULD MAKE THE BOTTOM QUARTER OF THE IMAGE MATTER MORE - MIGHT HELP WITH RECONSTRUCTION of BALL AND PADDLE IN BREAKOUT
 
@@ -176,7 +177,8 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=0.005, eta=0.005):
         # FIXME: Make this into a methods which also logs to a file
         print(f"\tIteration {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
 
-        if iteration >= 2000 or (recon_loss < delta and vq_loss < eta): # if convergence => break
+        #if iteration >= 1000 or (recon_loss < delta/100 and vq_loss < eta/100): # if convergence => break
+        if iteration >= 200 or (recon_loss < delta and vq_loss < eta): # if convergence => break
             break
 
 def value_iteration(mdp, gamma=0.99, theta=1e-6):
@@ -268,7 +270,7 @@ def create_argparser(): # modified from previous project
     parser.add_argument('--env-name', default="breakout", type=str, choices=["breakout", "tennis", "space_invaders", "boxing", "pong"], help="env name")
     parser.add_argument('--lr', default=2e-4, type=float, help="learning rate")
     parser.add_argument('--epoch', default=10001, type=int, help="training epoch")
-    parser.add_argument('--batch-size', default=32, type=int, help="batch size")
+    parser.add_argument('--batch-size', default=64, type=int, help="batch size")
     parser.add_argument('--eval-cycle', default=50, type=int, help="evaluation cycle")
     return parser.parse_args()
 

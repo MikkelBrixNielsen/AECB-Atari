@@ -139,7 +139,7 @@ def sample_memory(memory, args):
             torch.cat(batch.reward).unsqueeze(1), # reward_batch (bs, 1, 84, 84)
     )
 
-def train_VQ_VAE(model, memory, optimizer, args, delta=5e-3, eta=5e-2):
+def train_VQ_VAE(model, memory, optimizer, args, delta=5e-3, eta=5e-2): # reduce this probably - FIXME
     # FIXME Maybe include some performance / loss tracking?
     model.train()
 
@@ -159,6 +159,7 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=5e-3, eta=5e-2):
         # FIXME: Make this into a methods which also logs to a file
         print(f"\tIteration {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
 
+        # add iteration limit (200-+?) probably - FIXME
         if recon_loss < delta and vq_loss < eta: # if convergence => break
             break
 

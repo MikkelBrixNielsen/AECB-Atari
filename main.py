@@ -21,6 +21,7 @@ LOG_DIR, LOG_PATH = make_log_dir(args)
 def main():
     seeds = [834920, 174635, 908172, 562349, 310786]
     episodes = 10 # number of games the newly calculated policy should play before resuming training
+    # maybe this higher idk? - FIXME
 
     # runs = [] # list of runs 
     for i in range(len(seeds)):
@@ -30,7 +31,7 @@ def main():
         warmup(env, memory, seeds[i], DEVICE, WARMUP)
 
         for epoch in range(args.epoch):
-            model = VQVAE()
+            model = VQVAE() # maybe move this out or increase iterations by a LOT - FIXME
             optimizer = optim.Adam(model.parameters(), lr=args.lr)
             print(f"epoch: {epoch}")
             train_VQ_VAE(model, memory, optimizer, args)
