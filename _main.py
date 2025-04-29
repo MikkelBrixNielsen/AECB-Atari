@@ -26,13 +26,15 @@ def main():
     episodes = 10 # number of games the newly calculated policy should play before resuming training
 
     # runs = [] # list of runs 
-    for i in range(len(seeds)):
+    #for i in range(len(seeds)):
+    for i in range(1):
         total_steps = WARMUP
         memory, video = MemoryBuffer(50000), VideoRecorder(LOG_DIR) 
         env, n_action, _, _  = create_env(args.env_name, seeds[i], video=False)
         warmup(env, memory, seeds[i], DEVICE, WARMUP)
 
-        for epoch in range(args.epoch):
+        #for epoch in range(args.epoch):
+        for epoch in range(1):
             model = VQVAE()
             model.to(DEVICE) # chatGPT said add this - i think it might matter when using GPU and CPU, but if only CPU it prolly makes no difference
             optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -42,19 +44,36 @@ def main():
             _, pi = value_iteration(mdp, GAMMA)
             
             #if epoch % args.eval_cycle == 0:
-            if epoch % 5 == 0:
+            if epoch % 1 == 0:
                 eval_planner(model, pi, args.env_name, n_action, seeds[i], video, DEVICE, epoch, LOG_DIR)
-            
-            with torch.no_grad():
-                batch = torch.stack([state.squeeze(0) for state, *_ in memory.sample(64)]).unsqueeze(1).to(DEVICE)
-                recon, _ = model(batch)
+                with torch.no_grad():
+                    batch = torch.stack([state.squeeze(0) for state, *_ in memory.sample(64)]).unsqueeze(1).to(DEVICE)
+                    recon, _ = model(batch)
 
-                grid = vutils.make_grid(torch.cat([batch, recon], dim=0), nrow=8, normalize=True, scale_each=True)
-                plt.figure(figsize=(12, 6))
-                plt.imshow(grid.permute(1, 2, 0).cpu().numpy())
-                plt.title("Input (top) vs. Reconstruction (bottom)")
-                plt.axis('off')
-                plt.savefig(f'log_reconstruction_images/epoch_{epoch}')
+                    # stack batch and reconstructed images (2x64) into a single 16x8 image grid
+                    #grid = vutils.make_grid(torch.cat([batch, recon], dim=0), nrow=8, normalize=True, scale_each=True)
+                    #plt.figure(figsize=(12, 6))
+                    #plt.imshow(grid_batch.permute(1, 2, 0).cpu().numpy())
+                    #plt.title("Input (top) vs. Reconstruction (bottom)")
+                    #plt.axis('off')
+                    #plt.savefig(f'log_reconstruction_images/epoch_{epoch}')
+
+                    # 64 batch images in an 8x8 image grid
+                    grid_batch = vutils.make_grid(batch, nrow=8, normalize=True, scale_each=True)
+                    plt.figure(figsize=(12, 6))
+                    plt.imshow(grid_batch.permute(1, 2, 0).cpu().numpy())
+                    plt.title("Input (top) vs. Reconstruction (bottom)")
+                    plt.axis('off')
+                    plt.savefig(f'log_reconstruction_images/epoch_{epoch}_input')
+
+                    # reconstructed versions of the 64 batch images in an 8x8 image grid
+                    grid_recon = vutils.make_grid(recon, nrow=8, normalize=True, scale_each=True)
+                    plt.figure(figsize=(12, 6))
+                    plt.imshow(grid_recon.permute(1, 2, 0).cpu().numpy())
+                    plt.title("Input (top) vs. Reconstruction (bottom)")
+                    plt.axis('off')
+                    plt.savefig(f'log_reconstruction_images/epoch_{epoch}_reconstructed')
+                #model = VQVAE() # reset model after evaluation? idk just for lols
                 
             # decaying epsilon threshold for eps-greedy action selection - this encourages early exploration quite heavily
             EPSILON = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * total_steps / EPS_DECAY) 

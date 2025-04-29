@@ -140,7 +140,7 @@ def sample_memory(memory, args):
     )
 
 #def train_VQ_VAE(model, memory, optimizer, args, delta=5e-3, eta=5e-2):
-def train_VQ_VAE(model, memory, optimizer, args, delta=0.005, eta=0.05):
+def train_VQ_VAE(model, memory, optimizer, args, delta=0.005, eta=0.005):
     # FIXME Maybe include some performance / loss tracking?
     model.train()
 
@@ -160,6 +160,13 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=0.005, eta=0.05):
         recon_loss = ((recon - batch) ** 2 * weights).mean()
         # THIS SHOULD MAKE THE BOTTOM QUARTER OF THE IMAGE MATTER MORE - MIGHT HELP WITH RECONSTRUCTION of BALL AND PADDLE IN BREAKOUT
 
+        # NOTE - TRY READDING RGB COLOR AND USING R FOR BALL+PADDLE AND G FOR BLOCKS, 
+        # THEN ADD WEIGHTS FOR CHANNEL 0 (Red) (EMPHAZIS ON LEARNING BALL & PADDLE POSITION)
+        # MAYBE ALSO ADD NEGATIVE WEIGHTS FOR CHANNEL 1 (Green) OR MULTIPLY BY 0 TO IGNORE BLOCKS COMPLETELY FROM LEARNING
+        # LEFT/RIGHT/UPPER BORDER SHOULD ALSO BE GREEN TO UNDEREMPHASIZE/IGNORE DURING LEARNING
+        # FIXME - XXX - NOTE - WIP
+        # THEN WRITE REPORT I GUESS B-)
+
         loss = recon_loss + vq_loss
 
         optimizer.zero_grad()
@@ -169,7 +176,7 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=0.005, eta=0.05):
         # FIXME: Make this into a methods which also logs to a file
         print(f"\tIteration {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
 
-        if iteration >= 500 or (recon_loss < delta and vq_loss < eta): # if convergence => break
+        if iteration >= 2000 or (recon_loss < delta and vq_loss < eta): # if convergence => break
             break
 
 def value_iteration(mdp, gamma=0.99, theta=1e-6):
@@ -259,7 +266,7 @@ def interact_with_env(model, pi, env, n_action, memory, seed, device, eps_thresh
 def create_argparser(): # modified from previous project
     parser = argparse.ArgumentParser()
     parser.add_argument('--env-name', default="breakout", type=str, choices=["breakout", "tennis", "space_invaders", "boxing", "pong"], help="env name")
-    parser.add_argument('--lr', default=5e-4, type=float, help="learning rate")
+    parser.add_argument('--lr', default=2e-4, type=float, help="learning rate")
     parser.add_argument('--epoch', default=10001, type=int, help="training epoch")
     parser.add_argument('--batch-size', default=32, type=int, help="batch size")
     parser.add_argument('--eval-cycle', default=50, type=int, help="evaluation cycle")
