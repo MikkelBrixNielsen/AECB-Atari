@@ -91,14 +91,14 @@ def main():
                     #plt.savefig(f'log_reconstruction_images/epoch_{epoch}_reconstructed')
                 #model = VQVAE() # reset model after evaluation? idk just for lols
                 
-                # decaying epsilon threshold for eps-greedy action selection - this encourages early exploration quite heavily
-                EPSILON = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * total_steps / EPS_DECAY) 
+            # decaying epsilon threshold for eps-greedy action selection - this encourages early exploration quite heavily
+            EPSILON = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * total_steps / EPS_DECAY) 
 
-                for _ in range(episodes):
-                    # total_steps += interact_with_env(model, pi, env, n_action, memory, seeds[i], DEVICE)
+            for _ in range(episodes):
+                # total_steps += interact_with_env(model, pi, env, n_action, memory, seeds[i], DEVICE)
 
-                    # interact_with_env with epsilon threshold provided
-                    total_steps += interact_with_env(model, pi, env, n_action, memory, seeds[i], DEVICE, eps_threshold=EPSILON) 
+                # interact_with_env with epsilon threshold provided
+                total_steps += interact_with_env(model, pi, env, n_action, memory, seeds[i], DEVICE, eps_threshold=EPSILON) 
 
             print(f"mem length: {len(memory)}")
             print(f"Steps taken: {total_steps}")
