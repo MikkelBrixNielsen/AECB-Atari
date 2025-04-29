@@ -152,20 +152,20 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005):
         recon, vq_loss = model(batch)
         
         #recon_loss = F.mse_loss(recon, batch, reduction='mean') # STANDARD/DEFAULT LOSS CALCULATION BASED ON VQ-VAE ARTICLE THING
+        recon_loss = F.mse_loss(recon, batch, reduction='sum') # STANDARD/DEFAULT LOSS CALCULATION BASED ON VQ-VAE ARTICLE THING
 
         # WEIGHTED VERSION OF MSE_LOSS ^
-        weights = torch.ones_like(batch)
+        #weights = torch.ones_like(batch)
         # boost importance of center-bottom area: rows 42–83, columns 8–76 (inclusive)
-        weights[:, :, 31:, 5:79] *= 500.0 # FIXME: DETERMINE PROPER IMPORTANCE BOOST FOR LOWER HALF OF IMAGE
+        #weights[:, :, 31:, 5:79] *= 500.0 # FIXME: DETERMINE PROPER IMPORTANCE BOOST FOR LOWER HALF OF IMAGE
 
-        recon_loss = ((recon - batch) ** 2 * weights).mean()
         # THIS SHOULD MAKE THE BOTTOM QUARTER OF THE IMAGE MATTER MORE - MIGHT HELP WITH RECONSTRUCTION of BALL AND PADDLE IN BREAKOUT
+        #recon_loss = ((recon - batch) ** 2 * weights).mean()
 
-        # NOTE - TRY READDING RGB COLOR AND USING R FOR BALL+PADDLE AND G FOR BLOCKS, 
+        # NOTE - MAYBE TRY READDING RGB COLOR AND USING R FOR BALL+PADDLE AND G FOR BLOCKS, 
         # THEN ADD WEIGHTS FOR CHANNEL 0 (Red) (EMPHAZIS ON LEARNING BALL & PADDLE POSITION)
         # MAYBE ALSO ADD NEGATIVE WEIGHTS FOR CHANNEL 1 (Green) OR MULTIPLY BY 0 TO IGNORE BLOCKS COMPLETELY FROM LEARNING
         # LEFT/RIGHT/UPPER BORDER SHOULD ALSO BE GREEN TO UNDEREMPHASIZE/IGNORE DURING LEARNING
-        # FIXME - XXX - NOTE - WIP
         # THEN WRITE REPORT I GUESS B-)
 
         loss = recon_loss + vq_loss
@@ -178,7 +178,7 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005):
         print(f"\tIteration {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
 
         #if iteration >= 1000 or (recon_loss < delta/100 and vq_loss < eta/100): # if convergence => break
-        if iteration >= 200 or (recon_loss < delta and vq_loss < eta): # if convergence => break
+        if iteration >= 1000 or (recon_loss < delta and vq_loss < eta): # if convergence => break
             break
 
 def value_iteration(mdp, gamma=0.99, theta=1e-6):

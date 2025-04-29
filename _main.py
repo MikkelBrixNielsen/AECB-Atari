@@ -23,7 +23,7 @@ LOG_DIR, LOG_PATH = make_log_dir(args)
 
 def main():
     seeds = [834920, 174635, 908172, 562349, 310786]
-    episodes = 25 # number of games the newly calculated policy should play before resuming training
+    episodes = 50 # number of games the newly calculated policy should play before resuming training
 
     # runs = [] # list of runs 
     #for i in range(len(seeds)):
@@ -49,7 +49,7 @@ def main():
         model.to(DEVICE) # chatGPT said add this - i think it might matter when using GPU and CPU, but if only CPU it prolly makes no difference
 
         #for epoch in range(args.epoch):
-        for epoch in range(1000):
+        for epoch in range(100):
             #model = VQVAE()
             #model.to(DEVICE) # chatGPT said add this - i think it might matter when using GPU and CPU, but if only CPU it prolly makes no difference
             optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -67,38 +67,38 @@ def main():
                     recon, _ = model(batch)
 
                     # stack batch and reconstructed images (2x16) into a single 8x4 image grid
-                    #grid = vutils.make_grid(torch.cat([batch, recon], dim=0), nrow=8, normalize=True, scale_each=True)
+                    grid = vutils.make_grid(torch.cat([batch, recon], dim=0), nrow=8, normalize=True, scale_each=True)
+                    plt.figure(figsize=(12, 6))
+                    plt.imshow(grid.permute(1, 2, 0).cpu().numpy())
+                    plt.title("Input (top) vs. Reconstruction (bottom)")
+                    plt.axis('off')
+                    plt.savefig(f'log_reconstruction_images/epoch_{epoch}')
+
+                    ## 16 batch images in an 4x4 image grid
+                    #grid_batch = vutils.make_grid(batch, nrow=4, normalize=True, scale_each=True)
                     #plt.figure(figsize=(12, 6))
                     #plt.imshow(grid_batch.permute(1, 2, 0).cpu().numpy())
                     #plt.title("Input (top) vs. Reconstruction (bottom)")
                     #plt.axis('off')
-                    #plt.savefig(f'log_reconstruction_images/epoch_{epoch}')
+                    #plt.savefig(f'log_reconstruction_images/epoch_{epoch}_input')
 
-                    # 16 batch images in an 4x4 image grid
-                    grid_batch = vutils.make_grid(batch, nrow=4, normalize=True, scale_each=True)
-                    plt.figure(figsize=(12, 6))
-                    plt.imshow(grid_batch.permute(1, 2, 0).cpu().numpy())
-                    plt.title("Input (top) vs. Reconstruction (bottom)")
-                    plt.axis('off')
-                    plt.savefig(f'log_reconstruction_images/epoch_{epoch}_input')
-
-                    # reconstructed versions of the 16 batch images in an 4x4 image grid
-                    grid_recon = vutils.make_grid(recon, nrow=4, normalize=True, scale_each=True)
-                    plt.figure(figsize=(12, 6))
-                    plt.imshow(grid_recon.permute(1, 2, 0).cpu().numpy())
-                    plt.title("Input (top) vs. Reconstruction (bottom)")
-                    plt.axis('off')
-                    plt.savefig(f'log_reconstruction_images/epoch_{epoch}_reconstructed')
+                    ## reconstructed versions of the 16 batch images in an 4x4 image grid
+                    #grid_recon = vutils.make_grid(recon, nrow=4, normalize=True, scale_each=True)
+                    #plt.figure(figsize=(12, 6))
+                    #plt.imshow(grid_recon.permute(1, 2, 0).cpu().numpy())
+                    #plt.title("Input (top) vs. Reconstruction (bottom)")
+                    #plt.axis('off')
+                    #plt.savefig(f'log_reconstruction_images/epoch_{epoch}_reconstructed')
                 #model = VQVAE() # reset model after evaluation? idk just for lols
                 
-            # decaying epsilon threshold for eps-greedy action selection - this encourages early exploration quite heavily
-            EPSILON = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * total_steps / EPS_DECAY) 
+                # decaying epsilon threshold for eps-greedy action selection - this encourages early exploration quite heavily
+                EPSILON = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * total_steps / EPS_DECAY) 
 
-            for _ in range(episodes):
-                # total_steps += interact_with_env(model, pi, env, n_action, memory, seeds[i], DEVICE)
+                for _ in range(episodes):
+                    # total_steps += interact_with_env(model, pi, env, n_action, memory, seeds[i], DEVICE)
 
-                # interact_with_env with epsilon threshold provided
-                total_steps += interact_with_env(model, pi, env, n_action, memory, seeds[i], DEVICE, eps_threshold=EPSILON) 
+                    # interact_with_env with epsilon threshold provided
+                    total_steps += interact_with_env(model, pi, env, n_action, memory, seeds[i], DEVICE, eps_threshold=EPSILON) 
 
             print(f"mem length: {len(memory)}")
             print(f"Steps taken: {total_steps}")
