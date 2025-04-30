@@ -157,9 +157,6 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005, MAX_I
         # recon_loss = F.mse_loss(recon, batch, reduction='mean') # STANDARD/DEFAULT LOSS CALCULATION BASED ON VQ-VAE ARTICLE THING
         recon_loss = F.mse_loss(recon, batch, reduction='sum')
 
-
-
-
         # Output from model
         # recon_sample = recon[0].detach().cpu()
 
@@ -171,7 +168,6 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005, MAX_I
         #         axs[i].axis('off')
         #     plt.suptitle("VQ-VAE Reconstruction")
         #     plt.show()
-
 
         loss = recon_loss + vq_loss
 
@@ -219,7 +215,7 @@ def select_action(model, obs, pi, n_action):
         state = tuple(indices.view(-1).cpu().numpy())  # flatten to hashable tuple
         return pi.get(state, random.randint(0, n_action - 1))  # fallback
 
-def eval_planner(model, pi, env_name, n_action, seed, video, device, epoch, log_dir):
+def eval_planner(model, pi, env_name, n_action, seed, video, device, epoch, dir):
     env, _, obs, info = create_env(env_name, seed, video=video)
     obs = torch.from_numpy(obs).to(device) # (84, 84)
     frame_stack = deque([obs, obs, obs, obs], maxlen=4) # (4, 84, 84)
@@ -239,15 +235,9 @@ def eval_planner(model, pi, env_name, n_action, seed, video, device, epoch, log_
     
     env.close()
 
-    subdir = f"seed_{seed}"
-    full_path = os.path.join(log_dir, subdir)
-    if not os.path.exists(full_path):
-        os.makedirs(full_path)
+    video.save(os.path.join(dir, f"eval_{epoch}_{total_reward}.mp4"))
 
-    filename = f"eval_{epoch}_{total_reward}.mp4"
-    video.save(os.path.join(subdir, filename))
-
-    print(f"\tSeed {seed} - total reward: {total_reward}")
+    print(f"\tSeed {seed}, Epoch {epoch} - total reward: {total_reward}")
 
 # interact with env, inlcuding option to provide an epsilon threshold for eps-greedy action selection (to manage exploration)
 def interact_with_env(model, pi, env, n_action, memory, seed, device, eps_threshold=.25):
@@ -281,6 +271,7 @@ def create_argparser(): # modified from previous project
     parser.add_argument('--batch-size', default=32, type=int, help="batch size")
     parser.add_argument('--eval-cycle', default=50, type=int, help="evaluation cycle")
     parser.add_argument('--episodes', default=50, type=int, help="number of epsiodes")
+    parser.add_argument('--load-model', default=None, type=str, help="load existing model (Filepath)")
     return parser.parse_args()
 
 def create_env(game, seed, video=None): # from previous project
