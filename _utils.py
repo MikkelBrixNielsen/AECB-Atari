@@ -18,13 +18,14 @@ class MDPBuilder:
         self.quantizer = quantizer
 
     def discretize(self, frame):
-        frame = frame.unsqueeze(0) # (1, 1, 84, 84)
+        frame = frame.unsqueeze(0) # (1, 4, 84, 84)
         with torch.no_grad():
             z = self.encoder(frame)
             _, _, indices = self.quantizer(z)
+            print(f"Unique frames: {len(torch.unique(indices))} / {self.quantizer.num_embeddings}")
             indices = indices.view(z.shape[2], z.shape[3]) # (H, W)
 
-        return tuple(indices.view(-1).cpu().numpy()) # hashable
+        return tuple(indices.view(-1).cpu().numpy())
 
     def build(self, transitions):
         transitions = defaultdict(Counter)  # (s, a) -> next_s -> count
@@ -33,6 +34,7 @@ class MDPBuilder:
         counts = defaultdict(int)           # (s, a) -> count
 
         for s, a, sp, r, done in transitions:
+            print("DOING MDP STUFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
             ds = self.discretize(s)
             dsp = self.discretize(sp)
 
@@ -45,6 +47,8 @@ class MDPBuilder:
         mdp = defaultdict(dict)
 
         for (s, a), next_states in transitions.items():
+            print("DOING MDP STUFFF2222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222")
+
             total = sum(next_states.values())
             prob_list = []
 
@@ -77,31 +81,27 @@ class VideoRecorder: # from previous project
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward', 'done'))
 
-class MemoryBuffer():
-    # Cyclic memory buffer
+class MemoryBuffer:
     def __init__(self, size):
         self.size = size
-        self.memory = []
-        self.ptr = 0
+        self.memory = deque(maxlen=size)
 
     def append(self, *args):
-        if len(self.memory) < self.size: # less than self.size elements in buffer fill it
-            self.memory.append(Transition(*args))
-        else: # len(self.memory) equal >= self.size -> have cyclic behaviour
-            self.memory[self.ptr] = Transition(*args)
-            self.ptr = (self.ptr + 1) % self.size
+        self.memory.append(Transition(*args))
 
     def sample(self, batch):
+        # FIXME try doing an 80/20 split of random vs. recent frames to encourage recently learned behaviour
         return random.sample(self.memory, batch)
 
     def get_all(self):
-        return self.memory
-    
+        return list(self.memory)
+
     def __len__(self):
         return len(self.memory)
 
+
 def convert_to_tensor(next_obs, action, reward, truncated, terminated, device):
-    return (torch.from_numpy(next_obs).to(device).unsqueeze(0), # (1, 84, 84)
+    return (torch.from_numpy(next_obs).to(device), # (84, 84)
             torch.tensor([reward], device=device), # (1)
             torch.tensor([action], device=device), # (1)
             torch.tensor([truncated or terminated], device=device) # (1)
@@ -113,12 +113,16 @@ def warmup(env, memory, seed, device, warmup=1000): # modified method based on v
     warmupstep = 0
     while True:
         obs, _ = env.reset(seed=seed)
-        obs = torch.from_numpy(obs).to(device).unsqueeze(0) # (1, 84, 84)
+        obs = torch.from_numpy(obs).to(device) # (84, 84)
+        frame_stack = deque([obs, obs, obs, obs], maxlen=4) # (4, 84, 84)
+        obs = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
 
         while True:
             action = torch.tensor([[env.action_space.sample()]]).to(device)
             next_obs, reward, terminated, truncated, _ = env.step(action.item())
             next_obs, action, reward, done = convert_to_tensor(next_obs, action, reward, truncated, terminated, device)
+            frame_stack.append(next_obs)
+            next_obs = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
             memory.append(obs, action, next_obs, reward, done)
 
             obs = next_obs
@@ -133,14 +137,13 @@ def warmup(env, memory, seed, device, warmup=1000): # modified method based on v
 def sample_memory(memory, args):
     transitions = memory.sample(args.batch_size)
     batch = Transition(*zip(*transitions)) # batch-array of Transitions -> Transition of batch-arrays.
-    return (torch.cat(batch.state).unsqueeze(1), # state_batch (bs, 1, 84, 84)
-            torch.cat(batch.action).unsqueeze(1), # action_batch (bs, 1, 84, 84)
-            torch.cat(batch.next_state).unsqueeze(1), # next_state_batch (bs, 1, 84, 84)
-            torch.cat(batch.reward).unsqueeze(1), # reward_batch (bs, 1, 84, 84)
+    return (torch.cat(batch.state), # state_batch (bs, 4, 84, 84)
+            torch.cat(batch.action).unsqueeze(1), # action_batch (bs, 4, 84, 84)
+            torch.cat(batch.next_state), # next_state_batch (bs, 4, 84, 84)
+            torch.cat(batch.reward).unsqueeze(1), # reward_batch (bs, 4, 84, 84)
     )
 
-#def train_VQ_VAE(model, memory, optimizer, args, delta=5e-3, eta=5e-2):
-def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005):
+def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005, MAX_ITERATIONS=250):
     # FIXME Maybe include some performance / loss tracking?
     model.train()
 
@@ -148,25 +151,27 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005):
         st = time.time()
 
         state_batch, _, next_state_batch, _ = sample_memory(memory, args)
-        batch = torch.cat([state_batch, next_state_batch], dim=0) # (bs*2, 1, 84, 84)
+        batch = torch.cat([state_batch, next_state_batch], dim=0) # (bs*2, 4, 84, 84)
         recon, vq_loss = model(batch)
         
-        #recon_loss = F.mse_loss(recon, batch, reduction='mean') # STANDARD/DEFAULT LOSS CALCULATION BASED ON VQ-VAE ARTICLE THING
-        recon_loss = F.mse_loss(recon, batch, reduction='sum') # STANDARD/DEFAULT LOSS CALCULATION BASED ON VQ-VAE ARTICLE THING
+        # recon_loss = F.mse_loss(recon, batch, reduction='mean') # STANDARD/DEFAULT LOSS CALCULATION BASED ON VQ-VAE ARTICLE THING
+        recon_loss = F.mse_loss(recon, batch, reduction='sum')
 
-        # WEIGHTED VERSION OF MSE_LOSS ^
-        #weights = torch.ones_like(batch)
-        # boost importance of center-bottom area: rows 42–83, columns 8–76 (inclusive)
-        #weights[:, :, 31:, 5:79] *= 500.0 # FIXME: DETERMINE PROPER IMPORTANCE BOOST FOR LOWER HALF OF IMAGE
 
-        # THIS SHOULD MAKE THE BOTTOM QUARTER OF THE IMAGE MATTER MORE - MIGHT HELP WITH RECONSTRUCTION of BALL AND PADDLE IN BREAKOUT
-        #recon_loss = ((recon - batch) ** 2 * weights).mean()
 
-        # NOTE - MAYBE TRY READDING RGB COLOR AND USING R FOR BALL+PADDLE AND G FOR BLOCKS, 
-        # THEN ADD WEIGHTS FOR CHANNEL 0 (Red) (EMPHAZIS ON LEARNING BALL & PADDLE POSITION)
-        # MAYBE ALSO ADD NEGATIVE WEIGHTS FOR CHANNEL 1 (Green) OR MULTIPLY BY 0 TO IGNORE BLOCKS COMPLETELY FROM LEARNING
-        # LEFT/RIGHT/UPPER BORDER SHOULD ALSO BE GREEN TO UNDEREMPHASIZE/IGNORE DURING LEARNING
-        # THEN WRITE REPORT I GUESS B-)
+
+        # Output from model
+        # recon_sample = recon[0].detach().cpu()
+
+        # if iteration == MAX_ITERATIONS:
+        #     fig, axs = plt.subplots(1, 4, figsize=(10, 3))
+        #     for i in range(4):
+        #         axs[i].imshow(recon_sample[i], cmap='gray')
+        #         axs[i].set_title(f'Recon {i}')
+        #         axs[i].axis('off')
+        #     plt.suptitle("VQ-VAE Reconstruction")
+        #     plt.show()
+
 
         loss = recon_loss + vq_loss
 
@@ -177,8 +182,7 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005):
         # FIXME: Make this into a methods which also logs to a file
         print(f"\tIteration {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
 
-        #if iteration >= 1000 or (recon_loss < delta/100 and vq_loss < eta/100): # if convergence => break
-        if iteration >= 1000 or (recon_loss < delta and vq_loss < eta): # if convergence => break
+        if iteration > MAX_ITERATIONS or (recon_loss < delta and vq_loss < eta): # if max iterations reached oconvergence => break
             break
 
 def value_iteration(mdp, gamma=0.99, theta=1e-6):
@@ -209,7 +213,6 @@ def value_iteration(mdp, gamma=0.99, theta=1e-6):
 def select_action(model, obs, pi, n_action):
     model.eval()
     with torch.no_grad():
-        obs = obs.unsqueeze(0) # (1, 1, 84, 84)
         z = model.encoder(obs)
         _, _, indices = model.quantizer(z)
         indices = indices.view(z.shape[2], z.shape[3])
@@ -218,13 +221,17 @@ def select_action(model, obs, pi, n_action):
 
 def eval_planner(model, pi, env_name, n_action, seed, video, device, epoch, log_dir):
     env, _, obs, info = create_env(env_name, seed, video=video)
+    obs = torch.from_numpy(obs).to(device) # (84, 84)
+    frame_stack = deque([obs, obs, obs, obs], maxlen=4) # (4, 84, 84)
+
     total_reward = 0
     video.reset()
 
     while True:
-        obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)  # (1, 1, 84, 84)
-        action = select_action(model, obs_tensor, pi, n_action)
-        obs, reward, _, _, info = env.step(action)
+        obs = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
+        action = select_action(model, obs, pi, n_action)
+        next_obs, reward, _, _, info = env.step(action)
+        frame_stack.append(torch.from_numpy(next_obs).to(device))
         total_reward += reward
 
         if info["lives"] == 0:
@@ -244,20 +251,21 @@ def eval_planner(model, pi, env_name, n_action, seed, video, device, epoch, log_
 
 # interact with env, inlcuding option to provide an epsilon threshold for eps-greedy action selection (to manage exploration)
 def interact_with_env(model, pi, env, n_action, memory, seed, device, eps_threshold=.25):
-#def interact_with_env(model, pi, env, n_action, memory, seed, device):
-    # collects new samples from env based on pi and appends them to memory buffer
     obs, _ = env.reset(seed=seed)
-    obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)  # (1, 1, 84, 84)
-
+    obs = torch.from_numpy(obs).to(device) # (84, 84)
+    frame_stack = deque([obs, obs, obs, obs], maxlen=4) # (4, 84, 84)
+    obs = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
+    
     steps = 0
     while True:
-        # epsilon threshold to manage exploration
-        action = select_action(model, obs_tensor, pi, n_action) if random.random() > eps_threshold else random.randint(0, n_action - 1) 
-        #action = select_action(model, obs_tensor, pi, n_action)
+        # epsilon threshold to manage exploration / exploitation
+        action = select_action(model, obs, pi, n_action) if random.random() > eps_threshold else random.randint(0, n_action - 1) 
         next_obs, reward, terminated, truncated, info = env.step(action)
-        next_obs_tensor, reward_tensor, action_tensor, done_tensor = convert_to_tensor(next_obs, action, reward, truncated, terminated, device)
-        memory.append(obs_tensor, action_tensor, next_obs_tensor, reward_tensor, done_tensor)
-        obs_tensor = next_obs_tensor
+        next_obs, reward, action, done = convert_to_tensor(next_obs, action, reward, truncated, terminated, device)
+        frame_stack.append(next_obs)
+        next_obs = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
+        memory.append(obs, action, next_obs, reward, done)
+        obs = next_obs
         steps += 1
 
         if info["lives"] == 0:
@@ -270,8 +278,9 @@ def create_argparser(): # modified from previous project
     parser.add_argument('--env-name', default="breakout", type=str, choices=["breakout", "tennis", "space_invaders", "boxing", "pong"], help="env name")
     parser.add_argument('--lr', default=5e-4, type=float, help="learning rate")
     parser.add_argument('--epoch', default=10001, type=int, help="training epoch")
-    parser.add_argument('--batch-size', default=64, type=int, help="batch size")
+    parser.add_argument('--batch-size', default=32, type=int, help="batch size")
     parser.add_argument('--eval-cycle', default=50, type=int, help="evaluation cycle")
+    parser.add_argument('--episodes', default=50, type=int, help="number of epsiodes")
     return parser.parse_args()
 
 def create_env(game, seed, video=None): # from previous project
