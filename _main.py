@@ -24,7 +24,7 @@ MEM_BUFF    = 50000
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") # If GPU is available use it - otherwise use the CPU
 LOG_DIR, LOG_PATH = make_log_dir(args)
 
-def plot_input_vs_recon(batch, recon, epoch):
+def plot_input_vs_recon(batch, recon, epoch, dir):
     batch = batch[:8]  # first 8 samples
     recon = recon[:8]
 
@@ -40,7 +40,7 @@ def plot_input_vs_recon(batch, recon, epoch):
             axs[i, j+4].axis('off')
 
     plt.tight_layout()
-    plt.savefig(f'log_reconstruction_images/epoch_{epoch}')
+    plt.savefig(f'{dir}/epoch_{epoch}')
     plt.close()
 
 
@@ -56,7 +56,7 @@ def main():
     #load previously trained model and start interacting with environment instead of training new VQVAE model
     model = VQVAE().to(DEVICE)
     try:
-        model_name = "model_20.pth" # CHANGE THIS AS NEEDED MAYBE JUST DEFAULT TO NEWEST VERSION SOMEHOW IDK ELSE JUST HARDCODE IT
+        model_name = "model_2.pth" # CHANGE THIS AS NEEDED MAYBE JUST DEFAULT TO NEWEST VERSION SOMEHOW IDK ELSE JUST HARDCODE IT
         model.load_state_dict(torch.load(os.path.join(models_dir, model_name), map_location=DEVICE)["model_state_dict"])
         print(f"Loaded model {model_name}")
         LOAD = True
@@ -81,7 +81,7 @@ def main():
 
             total_steps += interact_with_env(model, pi, env, n_action, memory, seeds[0], DEVICE, eps_threshold=EPSILON) 
             
-            if epoch % 10 == 0:
+            if epoch % 100 == 0:
                 eval_planner(model, pi, args.env_name, n_action, seeds[0], video, DEVICE, epoch, tests_dir)
         return
     # ^ CURRENTLY JUST FOR DEBUGGING PURPOSES - SHOULD BE REFACTORED IF KEPT
@@ -105,14 +105,14 @@ def main():
             _, pi = value_iteration(mdp, GAMMA)
             
             #if epoch % args.eval_cycle == 0:
-            if epoch % 5 == 0:
+            if epoch % 2 == 0:
                 eval_planner(model, pi, args.env_name, n_action, seeds[i], video, DEVICE, epoch, LOG_DIR)
                 with torch.no_grad():
                     state_batch, _, next_state_batch, _ = sample_memory(memory, args)
                     batch = torch.cat([state_batch, next_state_batch], dim=0) # (bs*2, 4, 84, 84)
                     recon, _ = model(batch)
 
-                plot_input_vs_recon(batch, recon, epoch)
+                plot_input_vs_recon(batch, recon, epoch, images_dir)
 
                 # Save the model
                 m_path = os.path.join(models_dir, f"model_{epoch}.pth")
