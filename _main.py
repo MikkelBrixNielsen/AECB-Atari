@@ -54,14 +54,16 @@ def main():
 
     # CURRENTLY JUST FOR DEBUGGING PURPOSES - SHOULD BE REFACTORED IF KEPT
     #load previously trained model and start interacting with environment instead of training new VQVAE model
-    LOAD = True
+    model = VQVAE().to(DEVICE)
     try:
-        model_name = "model_10.pth" # CHANGE THIS AS NEEDED MAYBE JUST DEFAULT TO NEWEST VERSION SOMEHOW IDK ELSE JUST HARDCODE IT
-        model = VQVAE().to(DEVICE).load_state_dict(torch.load(os.path.join(models_dir, model_name), map_location=DEVICE)["model_state_dict"])
+        model_name = "model_20.pth" # CHANGE THIS AS NEEDED MAYBE JUST DEFAULT TO NEWEST VERSION SOMEHOW IDK ELSE JUST HARDCODE IT
+        model.load_state_dict(torch.load(os.path.join(models_dir, model_name), map_location=DEVICE)["model_state_dict"])
         print(f"Loaded model {model_name}")
+        LOAD = True
     except Exception as e:
         print(f"Failed to load model {model_name}: {e}")
         print("Starting training from scratch.")
+        LOAD = False
     if LOAD:
         # FOR TEST RESULSTS OF A LOADED MODEL
         tests_dir = os.path.join(LOG_DIR, "test_results")
