@@ -268,7 +268,7 @@ def interact_with_env(model, pi, env, n_action, memory, seed, device, eps_thresh
 def create_argparser(): # modified from previous project
     parser = argparse.ArgumentParser()
     parser.add_argument('--env-name', default="breakout", type=str, choices=["breakout", "tennis", "space_invaders", "boxing", "pong"], help="env name")
-    parser.add_argument('--lr', default=2e-4, type=float, help="learning rate")
+    parser.add_argument('--lr', default=5e-4, type=float, help="learning rate")
     parser.add_argument('--epoch', default=10001, type=int, help="training epoch")
     parser.add_argument('--batch-size', default=64, type=int, help="batch size")
     parser.add_argument('--eval-cycle', default=50, type=int, help="evaluation cycle")
