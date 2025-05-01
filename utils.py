@@ -25,6 +25,7 @@ class MDPBuilder:
         return tuple(indices.view(-1).cpu().numpy()) # maybe use .tobytes()
     
     def build(self, transition_tuples):
+        print("Building MDP")
         N_sas = defaultdict(Counter)  # (s, a) -> next_s -> count
         R = defaultdict(float)        # (s, a) -> total_reward
         D = defaultdict(int)            # (s, a) -> # of terminal transitions
@@ -150,23 +151,6 @@ def train_VQ_VAE(model, memory, optimizer, args, max_iterations, delta=0.0005, e
         
         # recon_loss = F.mse_loss(recon, batch, reduction='mean') # STANDARD/DEFAULT LOSS CALCULATION BASED ON VQ-VAE ARTICLE THING
         recon_loss = F.mse_loss(recon, batch, reduction='sum')
-
-
-
-
-        # Output from model
-        # recon_sample = recon[0].detach().cpu()
-
-        # if iteration == MAX_ITERATIONS:
-        #     fig, axs = plt.subplots(1, 4, figsize=(10, 3))
-        #     for i in range(4):
-        #         axs[i].imshow(recon_sample[i], cmap='gray')
-        #         axs[i].set_title(f'Recon {i}')
-        #         axs[i].axis('off')
-        #     plt.suptitle("VQ-VAE Reconstruction")
-        #     plt.show()
-
-
         loss = recon_loss + vq_loss
 
         optimizer.zero_grad()
@@ -176,15 +160,17 @@ def train_VQ_VAE(model, memory, optimizer, args, max_iterations, delta=0.0005, e
         # FIXME: Make this into a methods which also logs to a file
         print(f"\tIteration {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
 
-        if iteration > max_iterations or (recon_loss < delta and vq_loss < eta): # if max iterations reached oconvergence => break
+        if iteration > max_iterations - 1 or (recon_loss < delta and vq_loss < eta): # if max iterations reached oconvergence => break
             break
 
-def value_iteration(mdp, gamma=0.99, theta=1e-3): # 1e-6
+def value_iteration(mdp, gamma=0.99, theta=1e-3): # 1e-3 eller 1e-6 
     print("Doing value iteration...")
     V = defaultdict(float)
     pi = {}
 
+    cnt = 0
     while True:
+        cnt += 1
         delta = 0
         for state in mdp:
             action_values = []
@@ -200,6 +186,7 @@ def value_iteration(mdp, gamma=0.99, theta=1e-3): # 1e-6
                 V[state] = best_value
                 pi[state] = best_action
 
+        print(f"Value iteration - round: {cnt}: {delta}  -  {theta}")
         if delta < theta:
             break
 
@@ -223,16 +210,25 @@ def eval_planner(model, pi, env_name, n_action, seed, video, device, epoch, log_
     total_reward = 0
     video.reset()
 
+    cnt = 0
     while True:
+        cnt += 1
         obs = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
         action = select_action(model, obs, pi, n_action)
-        next_obs, reward, _, _, info = env.step(action)
+        next_obs, reward, terminated, truncated, info = env.step(action)
         frame_stack.append(torch.from_numpy(next_obs).to(device))
         total_reward += reward
 
-        if info["lives"] == 0:
-            break
-    
+        l = info["lives"]
+        print(f"Playing: action {action} step {cnt}, lives {l} ...")
+        
+        if terminated or truncated:
+            if info["lives"] == 0:
+                break
+            else:
+                obs, info = env.reset(seed=seed)
+                frame_stack.append(torch.from_numpy(obs).to(device))
+
     env.close()
 
     subdir = f"seed_{seed}"
@@ -242,19 +238,20 @@ def eval_planner(model, pi, env_name, n_action, seed, video, device, epoch, log_
 
     filename = f"eval_{epoch}_{total_reward}.mp4"
     video.save(os.path.join(subdir, filename))
+    torch.save(model, os.path.join(full_path,f'model{epoch}.pth')) 
 
     print(f"\tSeed {seed} - total reward: {total_reward}")
 
 # interact with env, inlcuding option to provide an epsilon threshold for eps-greedy action selection (to manage exploration)
 def interact_with_env(model, pi, env, n_action, memory, seed, device, eps_threshold=.25):
     print("Interacting with env...")
-    obs, _ = env.reset(seed=seed)
+    obs, info = env.reset(seed=seed)
     obs = torch.from_numpy(obs).to(device) # (84, 84)
     frame_stack = deque([obs, obs, obs, obs], maxlen=4) # (4, 84, 84)
-    obs = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
     
     steps = 0
     while True:
+        obs = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
         # epsilon threshold to manage exploration / exploitation
         action = select_action(model, obs, pi, n_action) if random.random() > eps_threshold else random.randint(0, n_action - 1) 
         next_obs, reward, terminated, truncated, info = env.step(action)
@@ -264,9 +261,13 @@ def interact_with_env(model, pi, env, n_action, memory, seed, device, eps_thresh
         memory.append(obs, action, next_obs, reward, done)
         obs = next_obs
         steps += 1
-
-        if info["lives"] == 0:
-            break
+        
+        if terminated or truncated:
+            if info["lives"] == 0:
+                break
+            else:
+                obs, info = env.reset(seed=seed)
+                frame_stack.append(torch.from_numpy(obs).to(device))
 
     return steps
 
@@ -290,7 +291,7 @@ def create_env(game, seed, video=None): # from previous project
         "pong": "PongNoFrameskip-v4"
     }
 
-    env = gym.make(game_envs.get(game, "BoxingNoFrameskip-v4"))
+    env = gym.make(game_envs.get(game, "BreakoutNoFrameskip-v4"))
     env = AtariWrapper(env) if not video else AtariWrapper(env, video=video)
     obs, info = env.reset(seed=seed)
     n_action = env.action_space.n

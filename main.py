@@ -4,8 +4,8 @@ import torch
 import torchvision.utils as vutils
 from model import VQVAE
 from torch import optim
-from _utils import MDPBuilder, MemoryBuffer, VideoRecorder
-from _utils import make_log_dir, create_argparser, create_env, warmup, train_VQ_VAE, eval_planner, value_iteration, interact_with_env, sample_memory, plot_runs
+from utils import MDPBuilder, MemoryBuffer, VideoRecorder
+from utils import make_log_dir, create_argparser, create_env, warmup, train_VQ_VAE, eval_planner, value_iteration, interact_with_env, sample_memory, plot_runs
 
 args = create_argparser()
 
@@ -45,17 +45,16 @@ def main():
     seeds = [834920]
 
     # runs = [] # list of runs 
-    for i in range(len(seeds)):
+    for seed in seeds:
         total_steps = WARMUP
         memory, video = MemoryBuffer(50000), VideoRecorder(LOG_DIR) 
-        env, n_action, _, _  = create_env(args.env_name, seeds[i], video=False)
-        warmup(env, memory, seeds[i], DEVICE, WARMUP)
+        env, n_action, _, _  = create_env(args.env_name, seed, video=False)
+        warmup(env, memory, seed, DEVICE, WARMUP)
 
         model = VQVAE()
         model.to(DEVICE)
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
         
-        i = 0
         for epoch in range(args.epoch):
             print(f"epoch: {epoch}")
 
@@ -64,18 +63,19 @@ def main():
             _, pi = value_iteration(mdp, GAMMA)
 
             if epoch % args.eval_cycle == 0:
-                eval_planner(model, pi, args.env_name, n_action, seeds[i], video, DEVICE, epoch, LOG_DIR)
+                eval_planner(model, pi, args.env_name, n_action, seed, video, DEVICE, epoch, LOG_DIR)
+                recon = None
                 with torch.no_grad():
                     state_batch, _, next_state_batch, _, _ = sample_memory(memory, args)
                     batch = torch.cat([state_batch, next_state_batch], dim=0) # (bs*2, 4, 84, 84)
                     recon, _ = model(batch)
-
-                    plot_input_vs_recon(batch, recon, epoch)
+                print("Plotting recon batch")
+                plot_input_vs_recon(batch, recon, epoch)
                 
             EPSILON = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * total_steps / EPS_DECAY) 
 
             for _ in range(args.episodes):
-                total_steps += interact_with_env(model, pi, env, n_action, memory, seeds[i], DEVICE, eps_threshold=EPSILON) 
+                total_steps += interact_with_env(model, pi, env, n_action, memory, seed, DEVICE, eps_threshold=EPSILON) 
 
             print(f"mem length: {len(memory)}",
                   f"Steps taken: {total_steps}", 
