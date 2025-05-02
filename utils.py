@@ -31,14 +31,14 @@ class MDPBuilder:
         D = defaultdict(int)            # (s, a) -> # of terminal transitions
         N_sa = defaultdict(int)           # (s, a) -> count
 
-        for s, a, sp, r, done in transition_tuples:
+        for s, a, sp, r, d in transition_tuples:
             ds = self.discretize(s)
             dsp = self.discretize(sp)
 
             N_sas[(ds, a)][dsp] += 1
             R[(ds, a)] += r
             N_sa[(ds, a)] += 1
-            if done:
+            if d:
                 D[(ds, a)] += 1
 
         mdp = defaultdict(dict)
@@ -88,7 +88,7 @@ class MemoryBuffer:
         return random.sample(self.memory, batch)
 
     def get_all(self):
-        return list(self.memory)
+        return self.memory
 
     def __len__(self):
         return len(self.memory)
@@ -138,7 +138,7 @@ def sample_memory(memory, args):
             torch.cat(batch.done).unsqueeze(1), # reward_batch (bs, 1, 84, 84)
     )
 
-def train_VQ_VAE(model, memory, optimizer, args, max_iterations, delta=0.0005, eta=0.0005):
+def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005):
     # FIXME Maybe include some performance / loss tracking?
     model.train()
 
@@ -160,7 +160,7 @@ def train_VQ_VAE(model, memory, optimizer, args, max_iterations, delta=0.0005, e
         # FIXME: Make this into a methods which also logs to a file
         print(f"\tIteration {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
 
-        if iteration > max_iterations - 1 or (recon_loss < delta and vq_loss < eta): # if max iterations reached oconvergence => break
+        if iteration > args.max_iterations - 1 or (recon_loss < delta and vq_loss < eta): # if max iterations reached oconvergence => break
             break
 
 def value_iteration(mdp, gamma=0.99, theta=1e-3): # 1e-3 eller 1e-6 
@@ -186,7 +186,7 @@ def value_iteration(mdp, gamma=0.99, theta=1e-3): # 1e-3 eller 1e-6
                 V[state] = best_value
                 pi[state] = best_action
 
-        print(f"Value iteration - round: {cnt}: {delta}  -  {theta}")
+        print(f"Value iteration - round: {cnt}: Delta {delta.item() if not isinstance(delta, int) else delta}, target {theta}")
         if delta < theta:
             break
 
@@ -253,7 +253,7 @@ def interact_with_env(model, pi, env, n_action, memory, seed, device, eps_thresh
     while True:
         obs = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
         # epsilon threshold to manage exploration / exploitation
-        action = select_action(model, obs, pi, n_action) if random.random() > eps_threshold else random.randint(0, n_action - 1) 
+        action = select_action(model, obs, pi, n_action) if pi and random.random() > eps_threshold else random.randint(0, n_action - 1) 
         next_obs, reward, terminated, truncated, info = env.step(action)
         next_obs, reward, action, done = convert_to_tensor(next_obs, action, reward, truncated, terminated, device)
         frame_stack.append(next_obs)
@@ -279,7 +279,9 @@ def create_argparser(): # modified from previous project
     parser.add_argument('--batch-size', default=32, type=int, help="batch size")
     parser.add_argument('--eval-cycle', default=50, type=int, help="evaluation cycle")
     parser.add_argument('--episodes', default=50, type=int, help="number of epsiodes")
+    parser.add_argument('--retrain-cycle', default=5, type=int, help="number of epochs before model is retrained")
     parser.add_argument('--max-iterations', default=250, type=int, help="max iterations VQVAE runs per training cycle")
+    parser.add_argument('--mdp-size', default=500, type=int, help="number of transitions to use when creating mdp")
     return parser.parse_args()
 
 def create_env(game, seed, video=None): # from previous project

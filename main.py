@@ -54,14 +54,17 @@ def main():
         model = VQVAE()
         model.to(DEVICE)
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
+        train_VQ_VAE(model, memory, optimizer, args)
         
-        for epoch in range(args.epoch):
+        for epoch in range(args.epoch)    :
             print(f"epoch: {epoch}")
-
-            train_VQ_VAE(model, memory, optimizer, args, max_iterations=args.max_iterations)
-            mdp = MDPBuilder(model.encoder, model.quantizer).build(memory.get_all())
+            
+            mdp = MDPBuilder(model.encoder, model.quantizer).build(memory.sample(args.mdp_size))
             _, pi = value_iteration(mdp, GAMMA)
-
+            
+            if epoch % args.retrain_cycle == 0:
+                train_VQ_VAE(model, memory, optimizer, args)
+            
             if epoch % args.eval_cycle == 0:
                 eval_planner(model, pi, args.env_name, n_action, seed, video, DEVICE, epoch, LOG_DIR)
                 recon = None
