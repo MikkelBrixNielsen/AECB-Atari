@@ -1,5 +1,5 @@
 
-# Current implementation is straight up copy paste from asking chatGPT what an VQ-VAE is
+# Current implementation is straight up copy paste from asking chatGPT what an VQ-VAE is (now plus some other changes)
 
 import torch 
 import torch.nn.functional as F

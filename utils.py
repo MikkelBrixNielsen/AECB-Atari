@@ -139,7 +139,9 @@ def sample_memory(memory, args):
     )
 
 def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005):
-    # FIXME Maybe include some performance / loss tracking?
+    loss_recon = []
+    loss_vq = []
+
     model.train()
 
     for iteration in count():
@@ -152,6 +154,8 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005):
         # recon_loss = F.mse_loss(recon, batch, reduction='mean') # STANDARD/DEFAULT LOSS CALCULATION BASED ON VQ-VAE ARTICLE THING
         recon_loss = F.mse_loss(recon, batch, reduction='sum')
         loss = recon_loss + vq_loss
+        loss_recon.append(recon_loss.item())
+        loss_vq.append(vq_loss.item())
 
         optimizer.zero_grad()
         loss.backward()
@@ -162,6 +166,8 @@ def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005):
 
         if iteration > args.max_iterations - 1 or (recon_loss < delta and vq_loss < eta): # if max iterations reached oconvergence => break
             break
+
+    return loss_recon, loss_vq
 
 def value_iteration(mdp, gamma=0.99, theta=1e-3): # 1e-3 eller 1e-6 
     print("Doing value iteration...")
@@ -303,7 +309,7 @@ def create_env(game, seed, video=None): # from previous project
 def make_log_dir(args): # modified from previous project
     log_dir = os.path.join(f"log_{args.env_name}", "VQ_VAE")
     if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+        os.makedirs(log_dir)    
     log_path = os.path.join(log_dir, "log.txt")
     return log_dir, log_path
 

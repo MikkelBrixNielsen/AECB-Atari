@@ -5,7 +5,8 @@ import torchvision.utils as vutils
 from model import VQVAE
 from torch import optim
 from utils import MDPBuilder, MemoryBuffer, VideoRecorder
-from utils import make_log_dir, create_argparser, create_env, warmup, train_VQ_VAE, eval_planner, value_iteration, interact_with_env, sample_memory, plot_runs
+from utils import make_log_dir, create_argparser, create_env, warmup, train_VQ_VAE, eval_planner, value_iteration, interact_with_env, sample_memory
+import os
 
 args = create_argparser()
 
@@ -20,7 +21,7 @@ WARMUP = 10000
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") # If GPU is available use it - otherwise use the CPU
 LOG_DIR, LOG_PATH = make_log_dir(args)
 
-def plot_input_vs_recon(batch, recon, epoch):
+def plot_input_vs_recon(batch, recon, epoch, seed=0000):
     batch = batch[:8]  # first 8 samples
     recon = recon[:8]
 
@@ -35,16 +36,36 @@ def plot_input_vs_recon(batch, recon, epoch):
             axs[i, j+4].set_title(f'Out {j}')
             axs[i, j+4].axis('off')
 
+    path = os.path.join(f'{LOG_DIR}/seed_{seed}', 'log_reconstruction_images')
+    if not os.path.exists(path):
+        os.makedirs(path)
+
     plt.tight_layout()
-    plt.savefig(f'log_reconstruction_images/epoch_{epoch}')
+    plt.savefig(f"{path}/epoch_{epoch}")
     plt.close()
 
+def plot_multiple_series(data_lists, labels=None, title='Plot', xlabel='X', ylabel='Y', figsize=(8, 6), seed=""):
+    plt.figure(figsize=figsize)
+    
+    for i, data in enumerate(data_lists):
+        x = list(range(len(data)))
+        label = labels[i] if labels and i < len(labels) else f'Series {i + 1}'
+        plt.plot(x, data, label=label, alpha=0.6)
+    
+    plt.title(title)
+    plt.yscale('log')
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(f"{LOG_DIR}/seed_{seed}/{title}")
 
 def main():
     # seeds = [834920, 174635, 908172, 562349, 310786]
     seeds = [834920]
 
     # runs = [] # list of runs 
+    loss_recon, loss_vq = [], []
     for seed in seeds:
         total_steps = WARMUP
         memory, video = MemoryBuffer(50000), VideoRecorder(LOG_DIR) 
@@ -54,26 +75,27 @@ def main():
         model = VQVAE()
         model.to(DEVICE)
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
-        train_VQ_VAE(model, memory, optimizer, args)
         
-        for epoch in range(args.epoch)    :
+        for epoch in range(args.epoch):
             print(f"epoch: {epoch}")
             
-            mdp = MDPBuilder(model.encoder, model.quantizer).build(memory.sample(args.mdp_size))
-            _, pi = value_iteration(mdp, GAMMA)
-            
             if epoch % args.retrain_cycle == 0:
-                train_VQ_VAE(model, memory, optimizer, args)
-            
-            if epoch % args.eval_cycle == 0:
-                eval_planner(model, pi, args.env_name, n_action, seed, video, DEVICE, epoch, LOG_DIR)
+                lrec, lvq = train_VQ_VAE(model, memory, optimizer, args)
+                loss_recon += lrec
+                loss_vq += lvq
+
                 recon = None
                 with torch.no_grad():
                     state_batch, _, next_state_batch, _, _ = sample_memory(memory, args)
                     batch = torch.cat([state_batch, next_state_batch], dim=0) # (bs*2, 4, 84, 84)
                     recon, _ = model(batch)
-                print("Plotting recon batch")
-                plot_input_vs_recon(batch, recon, epoch)
+                plot_input_vs_recon(batch, recon, epoch, seed=seed)
+
+            mdp = MDPBuilder(model.encoder, model.quantizer).build(memory.sample(args.mdp_size))
+            _, pi = value_iteration(mdp, GAMMA)
+            
+            if epoch % args.eval_cycle == 0:
+                eval_planner(model, pi, args.env_name, n_action, seed, video, DEVICE, epoch, LOG_DIR)
                 
             EPSILON = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * total_steps / EPS_DECAY) 
 
@@ -89,13 +111,15 @@ def main():
         # collect data for run and add it to list of runs
     # plot data for list of runs
     # plot_runs(runs)
+    # plot_multiple_series([loss_recon, loss_vq], ["Recon Loss", "VQ Loss"], "VQ-VAE Loss Curve", "Iterations", "Loss", figsize=(8,6), seed=seed)
+    plot_multiple_series([loss_recon, loss_vq, [a + b for (a, b) in zip(loss_recon, loss_vq)]], ["Recon Loss", "VQ Loss", "Combined loss"], "VQ-VAE Loss Curve", "Iterations", "Loss", figsize=(8,6), seed=seed)
     
 if __name__ == "__main__":
     main()
 
 
 # TODO: logging of training for planner
-# TODO: logging of traininig for VQ-VAE
+# TODO: logging of traininig for VQ-VAE (done-ish)
 # TODO: collect data to plot reward, loss, avg reward and avg loss for each seeded run
 # TODO: test shit and see if it works
 # TODO: sikkert rette en masse fejl :P
