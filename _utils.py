@@ -1,3 +1,4 @@
+import gc
 import os
 import time
 from itertools import count
@@ -8,57 +9,64 @@ from wrapper import AtariWrapper
 import torch.nn.functional as F
 from collections import namedtuple, deque, defaultdict, Counter
 import torch
-import numpy as np
 import random
 import argparse
 
 class MDPBuilder:
-    def __init__(self, encoder, quantizer):
+    def __init__(self, encoder, quantizer, r_max=1.0, m=10):
         self.encoder = encoder
         self.quantizer = quantizer
+        self.r_max = r_max  # Maximum possible reward
+        self.m = m          # Minimum number of samples before trusting experience
 
-    def discretize(self, frame):
-        frame = frame.unsqueeze(0) # (1, 4, 84, 84)
+    def discretize(self, frame):  # unchanged
         with torch.no_grad():
             z = self.encoder(frame)
             _, _, indices = self.quantizer(z)
-            print(f"Unique frames: {len(torch.unique(indices))} / {self.quantizer.num_embeddings}")
-            indices = indices.view(z.shape[2], z.shape[3]) # (H, W)
-
+            indices = indices.view(z.shape[2], z.shape[3])
         return tuple(indices.view(-1).cpu().numpy())
 
-    def build(self, transitions):
-        transitions = defaultdict(Counter)  # (s, a) -> next_s -> count
-        rewards = defaultdict(float)        # (s, a) -> total_reward
-        dones = defaultdict(int)            # (s, a) -> # of terminal transitions
-        counts = defaultdict(int)           # (s, a) -> count
+    def build(self, transition_tuples):
+        print("Building R-MAX MDP")
 
-        for s, a, sp, r, done in transitions:
-            print("DOING MDP STUFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
+        N_sas = defaultdict(Counter)  # (s, a) -> next_s -> count
+        R = defaultdict(float)        # (s, a) -> total_reward
+        D = defaultdict(int)          # (s, a) -> # of terminal transitions
+        N_sa = defaultdict(int)       # (s, a) -> count
+
+        all_states = set()
+
+        for s, a, sp, r, d in transition_tuples:
             ds = self.discretize(s)
             dsp = self.discretize(sp)
 
-            transitions[(ds, a)][dsp] += 1
-            rewards[(ds, a)] += r
-            counts[(ds, a)] += 1
-            if done:
-                dones[(ds, a)] += 1
+            all_states.add(ds)
+            all_states.add(dsp)
+
+            N_sas[(ds, a)][dsp] += 1
+            R[(ds, a)] += r
+            N_sa[(ds, a)] += 1
+            if d:
+                D[(ds, a)] += 1
 
         mdp = defaultdict(dict)
-
-        for (s, a), next_states in transitions.items():
-            print("DOING MDP STUFFF2222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222")
-
-            total = sum(next_states.values())
-            prob_list = []
-
-            for s_prime, cnt in next_states.items():
-                prob = cnt / total
-                avg_reward = rewards[(s, a)] / counts[(s, a)]
-                done_prob = dones[(s, a)] / counts[(s, a)]
-                prob_list.append((prob, s_prime, avg_reward, done_prob > 0.5))
-
-            mdp[s][a] = prob_list
+        for s in all_states:
+            for a in range(4): # FIXME should be num_actions
+                if N_sa[(s, a)] >= self.m:
+                    # Use empirical transition probabilities
+                    total = sum(N_sas[(s, a)].values())
+                    prob_list = []
+                    for sp, cnt in N_sas[(s, a)].items():
+                        prob = cnt / total
+                        avg_reward = R[(s, a)] / N_sa[(s, a)]
+                        done_prob = D[(s, a)] / N_sa[(s, a)]
+                        prob_list.append((prob, sp, avg_reward, done_prob > 0.5))
+                    mdp[s][a] = prob_list
+                else:
+                    # Use optimistic transition for unknown (s, a)
+                    optimistic_sp = s  # you could also define a dummy absorbing state
+                    prob_list = [(1.0, optimistic_sp, self.r_max, False)]
+                    mdp[s][a] = prob_list
 
         return mdp
 
@@ -94,7 +102,7 @@ class MemoryBuffer:
         return random.sample(self.memory, batch)
 
     def get_all(self):
-        return list(self.memory)
+        return self.memory
 
     def __len__(self):
         return len(self.memory)
@@ -138,54 +146,52 @@ def sample_memory(memory, args):
     transitions = memory.sample(args.batch_size)
     batch = Transition(*zip(*transitions)) # batch-array of Transitions -> Transition of batch-arrays.
     return (torch.cat(batch.state), # state_batch (bs, 4, 84, 84)
-            torch.cat(batch.action).unsqueeze(1), # action_batch (bs, 4, 84, 84)
+            torch.cat(batch.action).unsqueeze(1), # action_batch (bs, 1, 84, 84)
             torch.cat(batch.next_state), # next_state_batch (bs, 4, 84, 84)
-            torch.cat(batch.reward).unsqueeze(1), # reward_batch (bs, 4, 84, 84)
+            torch.cat(batch.reward).unsqueeze(1), # reward_batch (bs, 1, 84, 84)
+            torch.cat(batch.done).unsqueeze(1), # reward_batch (bs, 1, 84, 84)
     )
 
-def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005, MAX_ITERATIONS=250):
-    # FIXME Maybe include some performance / loss tracking?
+def train_VQ_VAE(model, memory, optimizer, args, delta=0.0005, eta=0.0005):
+    loss_recon = []
+    loss_vq = []
+
     model.train()
 
     for iteration in count():
         st = time.time()
 
-        state_batch, _, next_state_batch, _ = sample_memory(memory, args)
+        state_batch, _, next_state_batch, _, _ = sample_memory(memory, args)
         batch = torch.cat([state_batch, next_state_batch], dim=0) # (bs*2, 4, 84, 84)
         recon, vq_loss = model(batch)
         
         # recon_loss = F.mse_loss(recon, batch, reduction='mean') # STANDARD/DEFAULT LOSS CALCULATION BASED ON VQ-VAE ARTICLE THING
         recon_loss = F.mse_loss(recon, batch, reduction='sum')
-
-        # Output from model
-        # recon_sample = recon[0].detach().cpu()
-
-        # if iteration == MAX_ITERATIONS:
-        #     fig, axs = plt.subplots(1, 4, figsize=(10, 3))
-        #     for i in range(4):
-        #         axs[i].imshow(recon_sample[i], cmap='gray')
-        #         axs[i].set_title(f'Recon {i}')
-        #         axs[i].axis('off')
-        #     plt.suptitle("VQ-VAE Reconstruction")
-        #     plt.show()
-
         loss = recon_loss + vq_loss
+        loss_recon.append(recon_loss.item())
+        loss_vq.append(vq_loss.item())
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         # FIXME: Make this into a methods which also logs to a file
-        print(f"\tIteration {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
+        if iteration % 10 == 0:
+            print(f"\tIteration {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}")
 
-        if iteration > MAX_ITERATIONS or (recon_loss < delta and vq_loss < eta): # if max iterations reached oconvergence => break
+        if iteration > args.max_iterations - 1 or (recon_loss < delta and vq_loss < eta): # if max iterations reached oconvergence => break
             break
 
-def value_iteration(mdp, gamma=0.99, theta=1e-6):
+    return loss_recon, loss_vq
+
+def value_iteration(mdp, gamma=0.99, theta=5e-4): # 1e-3 eller 1e-6 
+    print("Doing value iteration...")
     V = defaultdict(float)
     pi = {}
 
+    cnt = 0
     while True:
+        cnt += 1
         delta = 0
         for state in mdp:
             action_values = []
@@ -201,6 +207,9 @@ def value_iteration(mdp, gamma=0.99, theta=1e-6):
                 V[state] = best_value
                 pi[state] = best_action
 
+        if cnt % 50 == 0:
+            print(f"\tValue iteration - round: {cnt}: Delta {delta}, target {theta}")
+
         if delta < theta:
             break
 
@@ -213,43 +222,63 @@ def select_action(model, obs, pi, n_action):
         _, _, indices = model.quantizer(z)
         indices = indices.view(z.shape[2], z.shape[3])
         state = tuple(indices.view(-1).cpu().numpy())  # flatten to hashable tuple
-        return pi.get(state, random.randint(0, n_action - 1))  # fallback
-
-def eval_planner(model, pi, env_name, n_action, seed, video, device, epoch, dir):
-    env, _, obs, info = create_env(env_name, seed, video=video)
+        return int(pi.get(state, random.randint(0, n_action - 1))) # fallback + int conversion from tensor
+    
+def eval_planner(model, pi, env_name, seed, video, device, epoch, log_dir):
+    print("Evaluating Model...")
+    env, n_action, obs, info = create_env(env_name, seed, video=video)
     obs = torch.from_numpy(obs).to(device) # (84, 84)
     frame_stack = deque([obs, obs, obs, obs], maxlen=4) # (4, 84, 84)
 
     total_reward = 0
     video.reset()
 
+    cnt = 0
     while True:
+        cnt += 1
         obs = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
         action = select_action(model, obs, pi, n_action)
-        next_obs, reward, _, _, info = env.step(action)
-        frame_stack.append(torch.from_numpy(next_obs).to(device))
+        obs, reward, terminated, truncated, info = env.step(action)
+        frame_stack.append(torch.from_numpy(obs).to(device))
         total_reward += reward
 
-        if info["lives"] == 0:
-            break
-    
+        l = info["lives"]
+        #print(f"Playing: action {action} step {cnt}, lives {l} ...")
+
+        if terminated or truncated:
+            if info["lives"] == 0:
+                break
+            else:
+                obs, info = env.reset(seed=seed)
+                obs = torch.from_numpy(obs).to(device)
+                frame_stack = deque([obs, obs, obs, obs], maxlen=4) # (4, 84, 84) - reset frame stack since "new game" is starting
+
     env.close()
 
-    video.save(os.path.join(dir, f"eval_{epoch}_{total_reward}.mp4"))
+    subdir = f"seed_{seed}"
+    full_path = os.path.join(log_dir, subdir)
+    if not os.path.exists(full_path):
+        os.makedirs(full_path)
 
-    print(f"\tSeed {seed}, Epoch {epoch} - total reward: {total_reward}")
+    filename = f"eval{epoch}_{total_reward}.mp4"
+    video.save(os.path.join(subdir, filename))
+
+    print(f"\tSeed {seed} - total reward: {total_reward}")
 
 # interact with env, inlcuding option to provide an epsilon threshold for eps-greedy action selection (to manage exploration)
-def interact_with_env(model, pi, env, n_action, memory, seed, device, eps_threshold=.25):
-    obs, _ = env.reset(seed=seed)
+def interact_with_env(model, pi, env_name, memory, seed, device, eps_threshold=.25):
+    #print("Interacting with env...")
+    
+    env, n_action, _, _  = create_env(env_name, seed, video=False)
+    obs, info = env.reset(seed=seed)
     obs = torch.from_numpy(obs).to(device) # (84, 84)
     frame_stack = deque([obs, obs, obs, obs], maxlen=4) # (4, 84, 84)
     obs = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
     
-    steps = 0
+    steps, total_reward = 0, 0
     while True:
         # epsilon threshold to manage exploration / exploitation
-        action = select_action(model, obs, pi, n_action) if random.random() > eps_threshold else random.randint(0, n_action - 1) 
+        action = select_action(model, obs, pi, n_action) if pi and random.random() > eps_threshold else random.randint(0, n_action - 1) 
         next_obs, reward, terminated, truncated, info = env.step(action)
         next_obs, reward, action, done = convert_to_tensor(next_obs, action, reward, truncated, terminated, device)
         frame_stack.append(next_obs)
@@ -257,21 +286,37 @@ def interact_with_env(model, pi, env, n_action, memory, seed, device, eps_thresh
         memory.append(obs, action, next_obs, reward, done)
         obs = next_obs
         steps += 1
+        total_reward += reward
+        
+        if terminated or truncated:
+            if info["lives"] == 0:
+                break
+            else:
+                obs, info = env.reset(seed=seed)
+                obs = torch.from_numpy(obs)
+                frame_stack = deque([obs, obs, obs, obs], maxlen=4) # (4, 84, 84) - reset frame stack since "new game" is starting
+                obs = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
 
-        if info["lives"] == 0:
-            break
+    env.close()
+    frame_stack.clear()
+    gc.collect()
+
+    print("reward: ", int(total_reward))
 
     return steps
 
 def create_argparser(): # modified from previous project
     parser = argparse.ArgumentParser()
     parser.add_argument('--env-name', default="breakout", type=str, choices=["breakout", "tennis", "space_invaders", "boxing", "pong"], help="env name")
-    parser.add_argument('--lr', default=5e-4, type=float, help="learning rate")
-    parser.add_argument('--epoch', default=10001, type=int, help="training epoch")
+    parser.add_argument('--lr', default=3e-4, type=float, help="learning rate")
+    parser.add_argument('--epoch', default=201, type=int, help="training epoch")
     parser.add_argument('--batch-size', default=32, type=int, help="batch size")
-    parser.add_argument('--eval-cycle', default=50, type=int, help="evaluation cycle")
+    parser.add_argument('--eval-cycle', default=10, type=int, help="evaluation cycle")
     parser.add_argument('--episodes', default=50, type=int, help="number of epsiodes")
-    parser.add_argument('--load-model', default=None, type=str, help="load existing model (Filepath)")
+    parser.add_argument('--retrain-cycle', default=1, type=int, help="number of epochs before model is retrained")
+    parser.add_argument('--max-iterations', default=200, type=int, help="max iterations VQVAE runs per training cycle")
+    parser.add_argument('--mdp-size', default=2048, type=int, help="number of transitions to use when creating mdp")
+    parser.add_argument('--load-model', default=None, type=str, help="specify filepath to model_.pth for loading")
     return parser.parse_args()
 
 def create_env(game, seed, video=None): # from previous project
@@ -283,7 +328,7 @@ def create_env(game, seed, video=None): # from previous project
         "pong": "PongNoFrameskip-v4"
     }
 
-    env = gym.make(game_envs.get(game, "BoxingNoFrameskip-v4"))
+    env = gym.make(game_envs.get(game, "BreakoutNoFrameskip-v4"))
     env = AtariWrapper(env) if not video else AtariWrapper(env, video=video)
     obs, info = env.reset(seed=seed)
     n_action = env.action_space.n
@@ -293,10 +338,14 @@ def create_env(game, seed, video=None): # from previous project
 def make_log_dir(args): # modified from previous project
     log_dir = os.path.join(f"log_{args.env_name}", "VQ_VAE")
     if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+        os.makedirs(log_dir)    
     log_path = os.path.join(log_dir, "log.txt")
     return log_dir, log_path
 
 def plot_runs(runs, log_dir):
     # FIXME make plot and save it in corresponding directory
     pass
+
+def LOG(S:str, filepath:str):
+    with open(filepath, 'a') as f:
+        f.write(S)
