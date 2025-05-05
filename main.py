@@ -5,17 +5,18 @@ import torchvision.utils as vutils
 from model import VQVAE
 from torch import optim
 from utils import MDPBuilder, MemoryBuffer, VideoRecorder
-from utils import make_log_dir, create_argparser, create_env, warmup, train_VQ_VAE, eval_planner, value_iteration, interact_with_env, sample_memory
+from utils import LOG, make_log_dir, create_argparser, create_env, warmup, train_VQ_VAE, eval_planner, value_iteration, interact_with_env, sample_memory
 import os
 
 args = create_argparser()
 
 # some hyperparameters
-GAMMA = 0.99
-EPS_START = 1-.5
-EPS_END = 0.05
-EPS_DECAY = 50000
-WARMUP = 10000
+GAMMA       = 0.99
+EPS_START   = 1-.5
+EPS_END     = 0.05
+EPS_DECAY   = 50000
+WARMUP      = 10000
+MEM_BUF     = 30000
 
 # global variables 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") # If GPU is available use it - otherwise use the CPU
@@ -67,17 +68,38 @@ def main():
     # runs = [] # list of runs 
     loss_recon, loss_vq = [], []
     for seed in seeds:
+        LOG(f"Running seed {seed}\n", LOG_PATH)
         total_steps = WARMUP
-        memory, video = MemoryBuffer(50000), VideoRecorder(LOG_DIR) 
+        memory, video = MemoryBuffer(MEM_BUF), VideoRecorder(LOG_DIR) 
         env, n_action, _, _  = create_env(args.env_name, seed, video=False)
+        LOG(f"Warming up for {WARMUP} steps...\n", LOG_PATH)
         warmup(env, memory, seed, DEVICE, WARMUP)
 
         model = VQVAE()
+        
+        # Load model if filepath is provided
+        if args.load_model is not None:
+            try:
+                model.load_state_dict(torch.load(args.load_model, weights_only=False).state_dict())
+                S=f"Loaded model from {args.load_model}"
+                print(S)
+                LOG(f"{S}\n", LOG_PATH)
+            except FileNotFoundError as e:
+                print(f"Warning: Model file {args.load_model} not found.\nExiting, please check the provided filepath and try again.")
+                LOG(f"ERROR {e}\n", LOG_PATH)
+                return # stop program execution if filepath not valid or model couldn't be loaded
+            except Exception as e:
+                print(f"Warning: Error loading model from path {args.load_model}\nExiting, please try again.")
+                LOG(f"ERROR: {e}\n", LOG_PATH)
+                return # stop program execution if filepath not valid or model couldn't be loaded
+        
         model.to(DEVICE)
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
         
         for epoch in range(args.epoch):
-            print(f"epoch: {epoch}")
+            S=f"epoch: {epoch}"
+            LOG(f"Running {S}\n", LOG_PATH)
+            print(S)
             
             if epoch % args.retrain_cycle == 0:
                 lrec, lvq = train_VQ_VAE(model, memory, optimizer, args)
@@ -91,22 +113,27 @@ def main():
                     recon, _ = model(batch)
                 plot_input_vs_recon(batch, recon, epoch, seed=seed)
 
-            mdp = MDPBuilder(model.encoder, model.quantizer).build(memory.sample(args.mdp_size))
+                mdp = MDPBuilder(model.encoder, model.quantizer).build(memory.sample(args.mdp_size))
             _, pi = value_iteration(mdp, GAMMA)
             
             if epoch % args.eval_cycle == 0:
-                eval_planner(model, pi, args.env_name, n_action, seed, video, DEVICE, epoch, LOG_DIR)
+                S=f"EVALUATING MODEL", LOG_PATH
+                LOG(f"{S}\n", LOG_PATH)
+                print(S)
+                eval_reward=eval_planner(model, pi, args.env_name, n_action, seed, video, DEVICE, epoch, LOG_DIR) # returns result of evaluation
+                LOG(f"\tReward: {eval_reward}\n", LOG_PATH)
+                
                 
             EPSILON = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * total_steps / EPS_DECAY) 
 
+            LOG(f"INTERACTING WITH ENVIRONMENT FOR {args.episodes} EPISODES\n", LOG_PATH)
             for _ in range(args.episodes):
                 total_steps += interact_with_env(model, pi, env, n_action, memory, seed, DEVICE, eps_threshold=EPSILON) 
 
-            print(f"mem length: {len(memory)}",
-                  f"Steps taken: {total_steps}", 
-                  f"epsilon: {EPSILON:.5f}")
+            S=f"Mem length: {len(memory)}, Steps taken: {total_steps}, Epsilon: {EPSILON:.5f}"
+            LOG(f"{S}\n", LOG_PATH)
 
-            print(f"MAYBE SOME OTHER TRACKING / LOGGING STUFF")
+            print(f"{S}\nMAYBE ADD SOME OTHER TRACKING / LOGGING STUFF")
 
         # collect data for run and add it to list of runs
     # plot data for list of runs

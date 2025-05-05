@@ -244,9 +244,10 @@ def eval_planner(model, pi, env_name, n_action, seed, video, device, epoch, log_
 
     filename = f"eval_{epoch}_{total_reward}.mp4"
     video.save(os.path.join(subdir, filename))
-    torch.save(model, os.path.join(full_path,f'model{epoch}.pth')) 
+    torch.save(model, os.path.join(full_path,f'model{epoch}.pth'))
 
-    print(f"\tSeed {seed} - total reward: {total_reward}")
+    print(f"\tTotal reward: {total_reward}")
+    return total_reward
 
 # interact with env, inlcuding option to provide an epsilon threshold for eps-greedy action selection (to manage exploration)
 def interact_with_env(model, pi, env, n_action, memory, seed, device, eps_threshold=.25):
@@ -288,6 +289,7 @@ def create_argparser(): # modified from previous project
     parser.add_argument('--retrain-cycle', default=5, type=int, help="number of epochs before model is retrained")
     parser.add_argument('--max-iterations', default=250, type=int, help="max iterations VQVAE runs per training cycle")
     parser.add_argument('--mdp-size', default=500, type=int, help="number of transitions to use when creating mdp")
+    parser.add_argument('--load-model', default=None, type=str, help="specify filepath to model_.pth for loading")
     return parser.parse_args()
 
 def create_env(game, seed, video=None): # from previous project
@@ -316,3 +318,7 @@ def make_log_dir(args): # modified from previous project
 def plot_runs(runs, log_dir):
     # FIXME make plot and save it in corresponding directory
     pass
+
+def LOG(S:str, filepath:str):
+    with open(filepath, 'a') as f:
+        f.write(S)
