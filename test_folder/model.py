@@ -59,8 +59,6 @@ class VectorQuantizer(nn.Module):
 
         e_loss = F.mse_loss(quantized.detach(), x, reduction='sum') # e_loss = ∥ z_e(x) − sg[e] ∥^2 
         q_loss = F.mse_loss(quantized, x.detach(), reduction='sum') # q_loss = ∥ sg[z_e(x)] − e ∥^2
-        # e_loss = F.mse_loss(quantized.detach(), x, reduction='mean') # e_loss = ∥ z_e(x) − sg[e] ∥^2 
-        # q_loss = F.mse_loss(quantized, x.detach(), reduction='mean') # q_loss = ∥ sg[z_e(x)] − e ∥^2
 
         loss = q_loss + self.commitment_cost * e_loss # q_loss + β * e_loss
         

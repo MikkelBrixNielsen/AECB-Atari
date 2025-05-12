@@ -72,6 +72,8 @@ steps_done = 0
 
 # Global variables
 DEBUGGER = DebugContainer(debug_mode=False)
+codebook_usage = "Not defined"
+transition_percentage = "Not defined"
 write_mode = 'w'
 
 def create_argparser(): # modified from previous project
@@ -102,17 +104,25 @@ def make_log_dir(args, seeds):
     log_path = os.path.join(log_dir, "log.txt")
     return log_dir, log_path
 
-def log(log_dir, message, console_log=False, show_steps=False, show_eps=False):
+def log(log_dir, message, console_log=False, show_steps=False, show_eps=False, show_codebook_usage=False, show_transition_percentage=False, no_log=False):
     global steps_done
-    global write_mode
     global eps_threshold
+    global codebook_usage
+    global transition_percentage
+    global write_mode
     if show_steps:
-        message = message + f", Steps done excluding warmup: {steps_done}"
+        message = message + f", Steps done w/o warmup: {steps_done}"
     if show_eps:
-        message = message + f", Epsilon: {eps_threshold}"
+        message = message + f", Epsilon: {eps_threshold:.4f}"
+    if show_codebook_usage:
+        message = message + f", {codebook_usage}"
+    if show_transition_percentage:
+        message = message + f", {transition_percentage}"
     if console_log:
         print(message)
-    os.makedirs(log_dir, exist_ok=True)  # Ensure the directory exists
+    if no_log:
+        return
+    os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "log.txt")
     with open(log_path, write_mode) as f:
         f.write(message + "\n")
@@ -184,7 +194,7 @@ def plot_planner_reward(episode_reward_list, eval_reward_list, seed, log_dir):
 def compute_codebook_usage(model, dataset, batch_size=128):
     model.eval()
     usage_counter = Counter()
-    loader = DataLoader(TensorDataset(torch.stack(dataset)), batch_size=batch_size)
+    loader = DataLoader(TensorDataset(torch.stack(dataset)), batch_size=batch_size) # (4, 84, 84) -> (bs, 4, 84, 84)
 
     with torch.no_grad():
         for (obs_batch, ) in loader:
@@ -196,13 +206,15 @@ def compute_codebook_usage(model, dataset, batch_size=128):
 
     return usage_counter
 
-def plot_codebook_usage(model, memory, log_dir, epoch, seed):
+def plot_codebook_usage(model, memory, log_dir, epoch, seed, batch_size=5000):
+    global codebook_usage
     num_codes = model.quantizer.num_embeddings
     dataset = []
 
-    for s, _, sp, _, _ in memory.get_all():
-        dataset.append(s)
-        dataset.append(sp)
+    min_size = min(len(memory), batch_size)
+    for s, _, sp, _, _ in memory.sample(min_size):
+        dataset.append(s.squeeze(0)) # (1, 4, 84, 84) -> (4, 84, 84)
+        dataset.append(sp.squeeze(0)) # (1, 4, 84, 84) -> (4, 84, 84)
     
     usage_counter = compute_codebook_usage(model, dataset)
     usage = [usage_counter.get(i, 0) for i in range(num_codes)]
@@ -217,8 +229,19 @@ def plot_codebook_usage(model, memory, log_dir, epoch, seed):
     plt.savefig(path)
     plt.close()
     print()
+    codebook_usage = f"Codebook usage: {used_codes} / {num_codes}"
+    log(log_dir, codebook_usage, console_log=DEBUGGER.get_mode(), no_log=True)
 
-    log(log_dir, f"Codebook usage: {used_codes} / {num_codes}")
+def plot_N_sa_histogram(N_sa, log_dir, epoch, seed):
+    counts = list(N_sa.values())
+    plt.figure(figsize=(10, 5))
+    plt.hist(counts, bins=30, log=True)
+    plt.xlabel("Visit Count per (s, a)")
+    plt.ylabel("Frequency")
+    plt.title("Histogram of N_sa Visit Counts")
+    path = f"{log_dir}/seed_{seed}/N_sa_Histogram_epoch_{epoch}"
+    plt.savefig(path)
+    plt.close()
 
 def create_env(game, seed, video=None): # from previous project
     game_envs = {
@@ -244,7 +267,7 @@ def convert_to_tensor(next_obs, action, reward, truncated, terminated, device):
             )
 
 def warmup(env, memory:MemoryBuffer, seed, device, log_dir, num_steps=10000): # modified method based on version of code from github
-    log(log_dir, "\tWarming up...", console_log=True)
+    log(log_dir, "\tWarming up...", console_log=True, no_log=True)
 
     steps_taken = 0
     st = time.time()
@@ -267,7 +290,7 @@ def warmup(env, memory:MemoryBuffer, seed, device, log_dir, num_steps=10000): # 
             if term or trun or steps_taken >= num_steps:
                 break
 
-    log(log_dir, f"\tWarmup completed in: {time.time() - st:.4f}, Collected Observations: {num_steps}", console_log=DEBUGGER.get_mode())
+    log(log_dir, f"\tWarmup completed in: {time.time() - st:.4f}, Collected Observations: {num_steps}", console_log=DEBUGGER.get_mode(), no_log=True)
 
 def extract_and_batch(transitions):
     batch = Transition(*zip(*transitions)) # batch-array of Transitions -> Transition of batch-arrays.
@@ -283,7 +306,7 @@ def sample_memory(memory, args):
 
 def train_VQ_VAE(model, memory, optimizer, args, log_dir, theta=5e-4, N=500):
     ast = time.time()
-    log(log_dir, "\tTraining Model...", console_log=True)
+    log(log_dir, "\tTraining Model...", console_log=True, no_log=True)
     recon_loss_list = []
     vq_loss_list = []
 
@@ -306,11 +329,11 @@ def train_VQ_VAE(model, memory, optimizer, args, log_dir, theta=5e-4, N=500):
         recon_loss_list.append(recon_loss.item())
         vq_loss_list.append(vq_loss.item())
 
-        log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode())
+        log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode(), no_log=True)
         if iteration > args.max_iterations - 1 or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
             break
 
-    log(log_dir, f"\tModel traininig completed in: {time.time() - ast}", console_log=True)
+    log(log_dir, f"\tModel traininig completed in: {time.time() - ast}", console_log=True, no_log=True)
     return recon_loss_list, vq_loss_list
 
 def train_model_and_plot(model, memory, optimizer, args, epoch, seed, log_dir):
@@ -331,9 +354,9 @@ def validate_transition_probabilities(P, tolerance=1e-6, log_dir=None, console_l
     if invalid_pairs:
         msg = f"\t\t[WARNING] {len(invalid_pairs)} (s, a) pairs have invalid transition probability sums:"
         if log_dir:
-            log(log_dir, msg, console_log=console_log)
+            log(log_dir, msg, console_log=console_log, no_log=True)
             for (s, a), total in invalid_pairs:
-                log(log_dir, f"\t(s, a) = ({s}, {a}) → total probability = {total:.6f}", console_log=False)
+                log(log_dir, f"\t(s, a) = ({s}, {a}) → total probability = {total:.6f}", console_log=False, no_log=True)
         else:
             print(msg)
             for i, ((s, a), total) in enumerate(invalid_pairs):
@@ -341,7 +364,7 @@ def validate_transition_probabilities(P, tolerance=1e-6, log_dir=None, console_l
     else:
         msg = "\t\t[OK] All transition probability distributions sum to ~1.0"
         if log_dir:
-            log(log_dir, msg, console_log=console_log)
+            log(log_dir, msg, console_log=console_log, no_log=True)
         else:
             print(msg)
 
@@ -379,6 +402,10 @@ def discretized_extract_and_batch(model, transitions, batch_size=128): # Larger 
 
     return zip(ds_list, a_list, dsp_list, r_list, d_list)
 
+def compute_known_transition_percentage(N_sa, states, actions, M):
+    total_possible = len(states) * len(actions)
+    known = sum([1 for (s, a) in N_sa if N_sa[(s, a)] >= M])
+    return 100.0 * known / total_possible if total_possible > 0 else 0.0
 
 def is_known(N_sa_val, M):
     return N_sa_val >= M
@@ -401,15 +428,16 @@ def update_P_R_D(items, N_sas, R_sum, D_sum, states, P, R, D, M=1):
             D[(s, a)] = 1 if D_sum[(s, a)] / total > 0.5 else 0
     return P, R, D
 
-def compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, M=1):
+def compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, M=1, R_max=1.0):
     P = defaultdict(dict)
-    R = defaultdict(lambda: 1.0)    # R-MAX fallback
-    D = defaultdict(int)            # defaults to 0
+    R = defaultdict(lambda: R_max)    # R-MAX fallback
+    D = defaultdict(int)              # defaults to 0
     return update_P_R_D(N_sa.items(), N_sas, R_sum, D_sum, states, P, R, D, M)
 
-def create_mdp(model, actions, transitions, log_dir, M=1):
+def create_mdp(model, actions, transitions, log_dir, M=1, R_max=1.0):
+    global transition_percentage
     st = time.time()
-    log(log_dir, "\tCreating MDP...", console_log=True)
+    log(log_dir, "\tCreating MDP...", console_log=True, no_log=True)
     processed_transitions = discretized_extract_and_batch(model, transitions)
 
     N_sa = Counter()
@@ -429,17 +457,22 @@ def create_mdp(model, actions, transitions, log_dir, M=1):
 
         states.update([s, sp])
 
-    P, R, D = compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, M)
+    P, R, D = compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, M, R_max)
+
+    s_max = b"\xff" * model.quantizer.num_embeddings
 
     # add self loop to unknown (s, a)-pairs
     for s in states: # observed discritized states
         for a in actions: # full action space from env
             if (s, a) not in P.keys():
-                P[(s, a)] = {s: 1.0}
+                P[(s, a)] = {s_max: 1.0}    # Optimistic transition to absorbing state
+                R[(s, a)] = R_max             # R_max value
+                D[(s, a)] = 0               # Assume non-terminal
 
     if DEBUGGER.get_mode():
         validate_transition_probabilities(P, tolerance=1e-6, log_dir=None, console_log=DEBUGGER.get_mode())
-    log(log_dir, f"\tMDP created in {time.time() - st:.4f}", console_log=True)
+    transition_percentage = f"Transition Percentage: {compute_known_transition_percentage(N_sa, states, actions, M)}%"
+    log(log_dir, f"\tMDP created in {time.time() - st:.4f}, {transition_percentage}", console_log=True, no_log=True)
 
     return {
         'N_sa': N_sa,           # Count of observed (s, a)-pairs
@@ -449,13 +482,16 @@ def create_mdp(model, actions, transitions, log_dir, M=1):
         'P': P,                 # Estimated P(s'|s, a)
         'R': R,                 # Estimated R(s, a)
         'D': D,                 # Estimation of whether (s, a) -> terminal state
-        'states': states,       # Observed discretized states 
-        'actions': actions      # Iterable containing all possible actions in env
+        'states': states,       # Observed discretized states
+        'actions': actions,     # Iterable containing all possible actions in env
+        's_max': s_max,         # Optimistic absorbing state
+        'R_max': R_max          # R_max used when creating MDP 
     }
 
 def update_mdp(mdp, model, transitions, log_dir, M=1):
+    global transition_percentage
     st = time.time()
-    log(log_dir, "\tUpdating MDP...", console_log=DEBUGGER.get_mode())
+    log(log_dir, "\tUpdating MDP...", console_log=DEBUGGER.get_mode(), no_log=True)
     updated_sa = set()
     processed_transitions = discretized_extract_and_batch(model, transitions)
 
@@ -475,15 +511,20 @@ def update_mdp(mdp, model, transitions, log_dir, M=1):
 
     if DEBUGGER.get_mode():
         validate_transition_probabilities(mdp['P'], tolerance=1e-6, log_dir=None, console_log=DEBUGGER.get_mode())
-    log(log_dir, f"\tMDP update completed in: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode())
+    transition_percentage = f"Transition Percentage: {compute_known_transition_percentage(mdp['N_sa'], mdp['states'], mdp['actions'], M)}%"
+    log(log_dir, f"\tMDP update completed in: {time.time() - st:.4f}, {transition_percentage}", console_log=DEBUGGER.get_mode(), no_log=True)
 
-def VI(P, R, states, actions, log_dir, V=defaultdict(float), gamma=0.99, max_iterations=10000, tol=1e-6, max_patience=10):
+def VI(P, R, states, actions, log_dir, V, gamma=0.99, max_iterations=10000, tol=1e-6, max_patience=10, s_max=None, R_max=1.0):
     ast = time.time()
-    log(log_dir, "\tDoing Value Iteration...", console_log=DEBUGGER.get_mode())
+    log(log_dir, "\tDoing Value Iteration...", console_log=DEBUGGER.get_mode(), no_log=True)
     Q = defaultdict(float)
+    V[states[-1]]
     pi = {}
     patience = 0
     prev_delta = float('inf')
+
+    if s_max is not None:
+        V[s_max] = R_max / (1-gamma) # Value of optimistic absorbing state set to max discounted reward
 
     for i in range(max_iterations):
         st = time.time()
@@ -501,16 +542,14 @@ def VI(P, R, states, actions, log_dir, V=defaultdict(float), gamma=0.99, max_ite
             V[s] = q_max
             pi[s] = best_a
 
-        log(log_dir, f"\t\tVI - Round: {i}, Delta: {delta}, Target: {tol}, Duration: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode())
+        log(log_dir, f"\t\tVI - Round: {i}, Delta: {delta}, Target: {tol}, Duration: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode(), no_log=True)
         if delta < tol or patience >= max_patience: # convergence check
             break
-
         if (delta == prev_delta):
             patience += 1
-
         prev_delta = delta
 
-    log(log_dir, f"\tVI completed in: {time.time() - ast:.4f}", console_log=DEBUGGER.get_mode())
+    log(log_dir, f"\tVI completed in: {time.time() - ast:.4f}", console_log=DEBUGGER.get_mode(), no_log=True)
     return pi, V
 
 def select_action_eval(model, action_space, pi, s):
@@ -523,7 +562,7 @@ def select_action_eval(model, action_space, pi, s):
 
 def eval_planner(model, pi, args, video, seed, device, epoch, log_dir):
     model.eval()
-    log(log_dir, "\tEvaluating Model...", console_log=True)
+    log(log_dir, "\tEvaluating Model...", console_log=True, no_log=True)
     env, action_space, s, info = create_env(args.env_name, seed=seed, video=video)
     s = torch.from_numpy(s).to(device) # (84, 84)
     frame_stack = deque([s] * 4, maxlen=4) # (4, 84, 84)
@@ -542,7 +581,7 @@ def eval_planner(model, pi, args, video, seed, device, epoch, log_dir):
 
         steps += 1
         lives = info["lives"]
-        log(log_dir, f"\t\tSteps Taken: {steps}, Lives: {lives}, Total Reward: {total_reward}, Duration: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode())
+        log(log_dir, f"\t\tSteps Taken: {steps}, Lives: {lives}, Total Reward: {total_reward}, Duration: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode(), no_log=True)
         if term or trun:
             if info["lives"] == 0:
                 break
@@ -555,17 +594,20 @@ def eval_planner(model, pi, args, video, seed, device, epoch, log_dir):
     video.save(path)
     video.reset()
     env.close()
-    log(log_dir, f"\tEvaluation completed in: {time.time() - st:.4f}, Total Reward: {total_reward}", console_log=DEBUGGER.get_mode())
+    log(log_dir, f"\tEvaluation completed in: {time.time() - st:.4f}, Total Reward: {total_reward}", console_log=DEBUGGER.get_mode(), no_log=True)
     return total_reward
 
-def select_action(model, action_space, pi, s):
+def select_action(model, action_space, pi, s, disable_eps_greedy=False):
     model.eval()
     global eps_threshold
     global steps_done
-    eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps_done / EPS_DECAY)
+
+    if not disable_eps_greedy: # Don't do epsilon calculations if it is disabled
+        eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps_done / EPS_DECAY)
+    
     steps_done += 1
     
-    if random.random() > eps_threshold:
+    if disable_eps_greedy or random.random() > eps_threshold:
         ds = discretize(model, s)
         if ds in pi:
             return pi.get(ds)
@@ -576,7 +618,7 @@ def select_action(model, action_space, pi, s):
     
 def collect_transitions(model, env, pi, memory, num_transitions, device, log_dir):
     ast = time.time()
-    log(log_dir, "\tCollecting Transitions...", console_log=True)
+    log(log_dir, "\tCollecting Transitions...", console_log=True, no_log=True)
     model.eval()
     global eps_threshold
     global steps_done
@@ -595,7 +637,7 @@ def collect_transitions(model, env, pi, memory, num_transitions, device, log_dir
 
         while True:
             s = torch.stack(list(frame_stack), dim=0).unsqueeze(0) # (1, 4, 84, 84)
-            a = select_action(model, env.action_space, pi, s)
+            a = select_action(model, env.action_space, pi, s, disable_eps_greedy=True) 
             sp, r, term, trun, info = env.step(a)
             sp, a, r, d = convert_to_tensor(sp, a, r, trun, term, device)
             frame_stack.append(sp)
@@ -607,7 +649,7 @@ def collect_transitions(model, env, pi, memory, num_transitions, device, log_dir
             lives = info["lives"]
             steps += 1
 
-            log(log_dir, f"\t\t\tSteps Taken: {steps}, Lives: {lives}, Epsilon: {eps_threshold}, Reward: {r.item()}, Elapsed Time: {time.time() - st:.4f}",console_log=DEBUGGER.get_mode())
+            log(log_dir, f"\t\t\tSteps Taken: {steps}, Lives: {lives}, Epsilon: {eps_threshold}, Reward: {r.item()}, Elapsed Time: {time.time() - st:.4f}",console_log=DEBUGGER.get_mode(), no_log=True)
 
             if term or trun:
                 if info["lives"] == 0:
@@ -617,13 +659,13 @@ def collect_transitions(model, env, pi, memory, num_transitions, device, log_dir
                     s = torch.from_numpy(s).to(device)
                     frame_stack = deque([s] * 4, maxlen=4)
 
-        log(log_dir, f"\t\tEpisode completed in: {time.time() - st:.4f}, Steps Taken: {steps}, Epsilon: {eps_threshold}, Total Reward: {total_reward}", console_log=DEBUGGER.get_mode())
+        log(log_dir, f"\t\tEpisode completed in: {time.time() - st:.4f}, Steps Taken: {steps}, Epsilon: {eps_threshold}, Total Reward: {total_reward}", console_log=DEBUGGER.get_mode(), no_log=True)
         
         total_reward_list.append(total_reward)
 
         if len(transitions) >= num_transitions:
             break
 
-    log(log_dir, f"\tTransitions collected in: {time.time() - ast:.4f}", console_log=DEBUGGER.get_mode())
+    log(log_dir, f"\tTransitions collected in: {time.time() - ast:.4f}", console_log=DEBUGGER.get_mode(), no_log=True)
 
     return transitions, total_reward_list[:num_transitions] # return transitions for MDP update

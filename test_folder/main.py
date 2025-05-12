@@ -2,7 +2,7 @@ import torch
 from model import VQVAE
 from torch import optim
 from utils import MemoryBuffer, VideoRecorder, DEBUGGER
-from utils import make_log_dir, create_argparser, create_env, warmup, train_model_and_plot, eval_planner, create_mdp, update_mdp, VI, collect_transitions, plot_model_loss, plot_planner_reward, log
+from utils import make_log_dir, create_argparser, create_env, warmup, train_model_and_plot, eval_planner, create_mdp, update_mdp, VI, collect_transitions, plot_model_loss, plot_planner_reward, plot_N_sa_histogram, log
 from collections import defaultdict
 import time
 
@@ -38,17 +38,16 @@ def main():
                 mdp = create_mdp(model, actions=range(action_space.n), transitions=memory.get_all(), log_dir=LOG_DIR, M=ARGS.min_visits)
                 recon_loss_list += lrec
                 vq_loss_list += lvq
-
-            pi, V = VI(mdp['P'], mdp['R'], mdp['states'], mdp['actions'], LOG_DIR, V=V)
+            pi, V = VI(mdp['P'], mdp['R'], mdp['states'], mdp['actions'], LOG_DIR, V=V, s_max=mdp['s_max'], R_max=mdp['R_max'])
             transitions, episode_rewards = collect_transitions(model, env, pi, memory, ARGS.transitions, DEVICE, LOG_DIR)
             episode_reward_list += episode_rewards
             update_mdp(mdp, model, transitions, LOG_DIR, M=ARGS.min_visits)
+            plot_N_sa_histogram(mdp['N_sa'], LOG_DIR, epoch, seed)
 
             if epoch % ARGS.eval_cycle == 0:
                 eval_reward = eval_planner(model, pi, ARGS, video, seed, DEVICE, epoch, LOG_DIR)
                 eval_reward_list.append(eval_reward)
-            
-            log(LOG_DIR, f"Epoch: {epoch}, Duration: {time.time() - st}", console_log=True, show_steps=True, show_eps=True)
+            log(LOG_DIR, f"Epoch: {epoch}, Duration: {time.time() - st:.4f}", console_log=True, show_steps=True, show_eps=True, show_codebook_usage=True, show_transition_percentage=True)
 
         plot_model_loss(recon_loss_list, vq_loss_list, seed, LOG_DIR)
         plot_planner_reward(episode_reward_list, eval_reward_list, seed, LOG_DIR)
@@ -56,4 +55,34 @@ def main():
 if __name__ == "__main__":
     main()
 
-    # NOTE: Try and increase the number of training cycles the VQVAE is allowed to do each epoch
+    # TODO: Drastically reduce min_visits 100 -> 5       (CURRENTLY TRYING THIS)
+
+    # TODO: Disable eps-greedy policy behaviour          (CURRENTLY TRYING THIS) (THIS CAN BE DONE BY CHANGING A BOOL PASSED TO SELECT ACTION IN EPISODE COLLECTION - RMAX BEHAVIOUR HAS BEEN UPDATED AS WELL)
+
+    # TODO: Collect more frames before updating the mdp try collecting 5k
+
+    # TODO: Lower latent_dim 16 or 8 for better generalization but less expressiveness
+    
+    # TODO: Lower commitment loss 0.25 -> 0.1 or 0.05 encourage exploration
+    
+    # TODO: Add VQVAE EMA code update
+
+    # TODO: Add entropy regularization (nudges model to not overuse same codes), something like entropy = -torch.sum(probs * torch.log(probs + 1e-8)) loss += λ * entropy
+
+    # TODO: Reinitialize embeddings which haven't been used much every N epochs 
+    
+    
+    
+    # TODO: Visualize random rollouts with code indices overlaid — are ball/paddle positions affecting only a few latent slots, or many?
+    # TODO: Log the distribution of N_sa and number of known transitions each epoch. If <10% of (s, a) pairs are known, you’re planning over a hollow model.
+    # TODO: Add output plot of model quantization 
+
+
+
+    # TODO: Try to reencode previous mdp using new VQVAE instead of resetting it 
+    # TODO: Try adding KL loss
+
+
+    # TODO: Try and increase the number of training cycles the VQVAE is allowed to do each epoch
+    # TODO: Try following the small world models paper closer
+
