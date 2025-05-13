@@ -228,9 +228,8 @@ def plot_codebook_usage(model, memory, log_dir, epoch, seed, batch_size=5000):
     path = f"{log_dir}/seed_{seed}/Codebook_Usage_epoch_{epoch}"
     plt.savefig(path)
     plt.close()
-    print()
     codebook_usage = f"Codebook usage: {used_codes} / {num_codes}"
-    log(log_dir, codebook_usage, console_log=DEBUGGER.get_mode(), no_log=True)
+    log(log_dir, f"\t" + codebook_usage, console_log=DEBUGGER.get_mode(), no_log=True)
 
 def plot_N_sa_histogram(N_sa, log_dir, epoch, seed):
     counts = list(N_sa.values())
@@ -333,7 +332,7 @@ def train_VQ_VAE(model, memory, optimizer, args, log_dir, theta=5e-4, N=500):
         if iteration > args.max_iterations - 1 or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
             break
 
-    log(log_dir, f"\tModel traininig completed in: {time.time() - ast}", console_log=True, no_log=True)
+    log(log_dir, f"\tModel training completed in: {time.time() - ast}", console_log=True, no_log=True)
     return recon_loss_list, vq_loss_list
 
 def train_model_and_plot(model, memory, optimizer, args, epoch, seed, log_dir):
@@ -516,7 +515,6 @@ def VI(P, R, states, actions, log_dir, V, gamma=0.99, max_iterations=10000, tol=
     ast = time.time()
     log(log_dir, "\tDoing Value Iteration...", console_log=DEBUGGER.get_mode(), no_log=True)
     Q = defaultdict(float)
-    V[states[-1]]
     pi = {}
     patience = 0
     prev_delta = float('inf')

@@ -57,7 +57,7 @@ if __name__ == "__main__":
 
     # TODO: Drastically reduce min_visits 100 -> 5       (CURRENTLY TRYING THIS)
 
-    # TODO: Disable eps-greedy policy behaviour          (CURRENTLY TRYING THIS) (THIS CAN BE DONE BY CHANGING A BOOL PASSED TO SELECT ACTION IN EPISODE COLLECTION - RMAX BEHAVIOUR HAS BEEN UPDATED AS WELL)
+    # TODO: Disable eps-greedy policy behaviour          (CURRENTLY TRYING THIS)
 
     # TODO: Collect more frames before updating the mdp try collecting 5k
 
@@ -71,10 +71,6 @@ if __name__ == "__main__":
 
     # TODO: Reinitialize embeddings which haven't been used much every N epochs 
     
-    
-    
-    # TODO: Visualize random rollouts with code indices overlaid — are ball/paddle positions affecting only a few latent slots, or many?
-    # TODO: Log the distribution of N_sa and number of known transitions each epoch. If <10% of (s, a) pairs are known, you’re planning over a hollow model.
     # TODO: Add output plot of model quantization 
 
 
