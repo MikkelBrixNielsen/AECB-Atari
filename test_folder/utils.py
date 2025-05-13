@@ -416,7 +416,7 @@ def identity(s1, s2):
 # P(s'|s, a) = { N(s, a, s) / N(s, a)    if N(s, a) >= M  |  R(s, a) = { R_sum / N(s, a)     if N(s, a) >= M  |  D(s, a) = { 1 if D_sum / N(s, a) > 0.5 else 0     if N(s, a) >= M
 #              { I[s' = s]}              otherwise        |            { R_max               otherwise        |            { 0                                     otherwise
 # Note: The otherwise part of R and D is provided by the default behaviour of defaultdicts, so can be omitted 
-def update_P_R_D(items, N_sas, R_sum, D_sum, states, P, R, D, M=1):
+def update_P_R_D(items, N_sas, R_sum, D_sum, states, actions, s_max, R_max, P, R, D, M=1):
     for (s, a), total in items:
         if is_known(total, M):
             P[(s, a)] = {
@@ -426,13 +426,22 @@ def update_P_R_D(items, N_sas, R_sum, D_sum, states, P, R, D, M=1):
             }
             R[(s, a)] = R_sum[(s, a)] / total
             D[(s, a)] = 1 if D_sum[(s, a)] / total > 0.5 else 0
+
+    # add self loop to unknown (s, a)-pairs
+    for s in states: # observed discritized states
+        for a in actions: # full action space from env
+            if (s, a) not in P.keys():
+                P[(s, a)] = {s_max: 1.0}    # Optimistic transition to absorbing state
+                R[(s, a)] = R_max           # R_max value
+                D[(s, a)] = 0               # Assume non-terminal
+
     return P, R, D
 
-def compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, M=1, R_max=1.0):
+def compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, actions, s_max, M=1, R_max=1.0):
     P = defaultdict(dict)
     R = defaultdict(lambda: R_max)    # R-MAX fallback
     D = defaultdict(int)              # defaults to 0
-    return update_P_R_D(N_sa.items(), N_sas, R_sum, D_sum, states, P, R, D, M)
+    return update_P_R_D(N_sa.items(), N_sas, R_sum, D_sum, states, actions, s_max, R_max, P, R, D, M)
 
 def create_mdp(model, actions, transitions, log_dir, M=1, R_max=1.0):
     global transition_percentage
@@ -451,23 +460,13 @@ def create_mdp(model, actions, transitions, log_dir, M=1, R_max=1.0):
         N_sa[(s, a)] += 1
         N_sas[(s, a, sp)] += 1
         R_sum[(s, a)] += r
-
         if d:
             D_sum[(s, a)] += 1
-
         states.update([s, sp])
-
-    P, R, D = compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, M, R_max)
 
     s_max = b"\xff" * model.quantizer.num_embeddings
 
-    # add self loop to unknown (s, a)-pairs
-    for s in states: # observed discritized states
-        for a in actions: # full action space from env
-            if (s, a) not in P.keys():
-                P[(s, a)] = {s_max: 1.0}    # Optimistic transition to absorbing state
-                R[(s, a)] = R_max             # R_max value
-                D[(s, a)] = 0               # Assume non-terminal
+    P, R, D = compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, actions, s_max, M, R_max)
 
     if DEBUGGER.get_mode():
         validate_transition_probabilities(P, tolerance=1e-6, log_dir=None, console_log=DEBUGGER.get_mode())
@@ -503,11 +502,10 @@ def update_mdp(mdp, model, transitions, log_dir, M=1):
         if d:
             mdp['D_sum'][(s, a)] += 1
         mdp['states'].update([s, sp])
-
         updated_sa.add((s, a))
 
     items = [((s, a), mdp['N_sa'][(s, a)]) for (s, a) in updated_sa]
-    mdp['P'], mdp['R'], mdp['D'] = update_P_R_D(items, mdp['N_sas'], mdp['R_sum'], mdp['D_sum'], mdp['states'], mdp['P'], mdp['R'], mdp['D'], M)
+    mdp['P'], mdp['R'], mdp['D'] = update_P_R_D(items, mdp['N_sas'], mdp['R_sum'], mdp['D_sum'], mdp['states'], mdp['actions'], mdp['s_max'], mdp['R_max'], mdp['P'], mdp['R'], mdp['D'], M)
 
     if DEBUGGER.get_mode():
         validate_transition_probabilities(mdp['P'], tolerance=1e-6, log_dir=None, console_log=DEBUGGER.get_mode())
