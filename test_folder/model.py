@@ -67,11 +67,80 @@ class VectorQuantizer(nn.Module):
         # quantized output z_q(x), quantization loss, indicies of chosen codebook vectors
         return quantized, loss, indices.view(x.shape[0], x.shape[2], x.shape[3]) # before reshaping
 
+class EMAQuantizer(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim, commitment_cost, decay=0.99, epsilon=1e-5):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.num_embeddings = num_embeddings
+        self.commitment_cost = commitment_cost
+        self.decay = decay
+        self.epsilon = epsilon
+
+        self.embeddings = nn.Parameter(torch.randn(num_embeddings, embedding_dim))
+        self.register_buffer("ema_cluster_size", torch.zeros(num_embeddings))
+        self.register_buffer("ema_w", torch.randn(num_embeddings, embedding_dim))
+
+    def reinitialize_unused_codes(self, min_usage=5):
+        unused_codes = (self.ema_cluster_size < min_usage).nonzero(as_tuple=True)[0]
+        if unused_codes.numel() > 0:
+            rand_vecs = torch.randn(unused_codes.numel(), self.embedding_dim).to(self.embeddings.device)
+            self.embeddings.data[unused_codes] = rand_vecs
+            self.ema_w[unused_codes] = rand_vecs
+            self.ema_cluster_size[unused_codes] = 1.0  # reset to small value to avoid divide-by-zero
+            print(f"[INFO] Reinitialized {unused_codes.numel()} unused codes.")
+
+    def forward(self, x):
+        # [B, C, H, W] -> [B, H, W, C]
+        x_perm = x.permute(0, 2, 3, 1).contiguous()
+        flat = x_perm.view(-1, self.embedding_dim)  # [BHW, C]
+
+        # Compute distances
+        dist = (
+            flat.pow(2).sum(1, keepdim=True)
+            - 2 * flat @ self.embeddings.t()
+            + self.embeddings.pow(2).sum(1)
+        )
+
+        # Nearest embeddings
+        indices = torch.argmin(dist, dim=1)
+        encodings = F.one_hot(indices, self.num_embeddings).type(flat.dtype)
+
+        # Quantize
+        quantized = encodings @ self.embeddings  # [BHW, C]
+        quantized = quantized.view(x_perm.shape).permute(0, 3, 1, 2).contiguous()
+
+        # EMA update
+        if self.training:
+            encodings_sum = encodings.sum(0)
+            dw = encodings.t() @ flat
+
+            self.ema_cluster_size.mul_(self.decay).add_(encodings_sum, alpha=1 - self.decay)
+            self.ema_w.mul_(self.decay).add_(dw, alpha=1 - self.decay)
+
+            # Normalize embeddings
+            n = self.ema_cluster_size.sum()
+            cluster_size = (
+                (self.ema_cluster_size + self.epsilon)
+                / (n + self.num_embeddings * self.epsilon)
+                * n
+            )
+            self.embeddings.data = self.ema_w / cluster_size.unsqueeze(1)
+
+        # Loss
+        e_loss = F.mse_loss(quantized.detach(), x, reduction='sum')
+        loss = self.commitment_cost * e_loss
+
+        # Straight-through estimator
+        quantized = x + (quantized - x).detach()
+
+        return quantized, loss, indices.view(x.shape[0], x.shape[2], x.shape[3])
+
 class VQVAE(nn.Module):
     def __init__(self, latent_dim=32, num_embeddings=128, commitment_cost=0.25):
         super().__init__()
         self.encoder = Encoder(latent_dim=latent_dim)
-        self.quantizer = VectorQuantizer(num_embeddings, latent_dim, commitment_cost)
+        # self.quantizer = VectorQuantizer(num_embeddings, latent_dim, commitment_cost)
+        self.quantizer = EMAQuantizer(num_embeddings, latent_dim, commitment_cost)
         self.decoder = Decoder(latent_dim=latent_dim)
 
     def forward(self, x):
