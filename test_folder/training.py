@@ -5,47 +5,74 @@ from itertools import count
 import torch.nn.functional as F
 from collections import deque
 import math
+import cv2 # type: ignore
+import numpy as np
 import random
 
 from plotting import plot_codebook_usage, plot_input_vs_recon
-from utils import Transition, VC, log, sample_memory, create_env
-from mdp import discretize
+from utils import VC, create_vectorized_envs, log, sample_memory, create_eval_env
 from model import VQVAE
 
 EPS_START, EPS_END, EPS_DECAY = 1, 0.05, 100000
 
-def convert_to_tensor(next_obs, action, reward, truncated, terminated, device):
-    return (torch.from_numpy(next_obs).to(device), # (84, 84)
-            torch.tensor([action], device=device), # (1)
-            torch.tensor([reward], device=device), # (1)
-            torch.tensor([truncated or terminated], device=device) # (1)
-            )
+def preprocess_frames(observations, device, crop_size=(34, 194, 0, 160), target_size=(84, 84), normalize=True):
+    def process(obs):
+        frame = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY) # To grayscale
+        frame = frame[crop_size[0]:crop_size[1],crop_size[2]:crop_size[3]]
+        frame = cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)  # Resize
+        if normalize:
+            return frame.astype(np.float32) / 255 #normalize
+        else:
+            return frame
+    return torch.from_numpy(np.stack([process(obs) for obs in observations])).to(device)
 
-def warmup(env, memory, device, log_dir, num_steps=10000): # modified method based on version of code from github
-    log(log_dir, "\tWarming up...", console_log=True, no_log=True)
+def _tensorize(e1, e2, e3, device):
+    return (torch.tensor([e1], device=device), torch.tensor([e2], device=device), torch.tensor([e3], device=device))
 
-    steps_taken = 0
+def to_tensor(items1, items2, items3, device):
+    ts = zip(*[_tensorize(e1, e2, e3, device) for e1, e2, e3 in zip(items1, items2, items3)])
+    return [torch.stack(t) for t in ts]
+
+def warmup(game, memory, device, log_dir, num_steps=10000, num_envs=6):
+    log(log_dir, "\tWarmup...", console_log=True, no_log=True)
+    envs, action_space, _, _ = create_vectorized_envs(game, num_envs=num_envs) # (num_envs, H, W, 3)
+
     st = time.time()
-    while steps_taken < num_steps:
-        s, _ = env.reset()
-        s = torch.from_numpy(s).to(device) # (84, 84)
-        frame_stack = deque([s] * 4, maxlen=4) # (4, 84, 84)
-        s = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
+    obs, _, = envs.reset()
+    obs = preprocess_frames(obs, device) # (num_envs, 84, 84)
+    frame_stacks = [deque([obs[i]]*4, maxlen=4) for i in range(num_envs)] # (num_envs, 4, 84, 84)
+    stacked_obs = torch.stack([torch.stack(list(fs), dim=0) for fs in frame_stacks]) # (num_envs, 4, 84, 84)
 
-        while True:
-            a = env.action_space.sample() # select random action
-            sp, r, term, trun, _ = env.step(a)
-            sp, a, r, d = convert_to_tensor(sp, a, r, trun, term, device)
-            frame_stack.append(sp)
-            sp = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
-            memory.append(s, a, sp, r, d)
-            s = sp
+    steps = 0
+    while steps < num_steps:
+        actions = action_space.sample()
+        next_obs, rewards, terms, truncs, infos = envs.step(actions)
+        next_obs = preprocess_frames(next_obs, device) # (num_envs, 84, 84)
+        rewards, actions, dones = to_tensor(rewards, actions, [t1 or t2 for t1, t2 in zip(terms, truncs)], device) # (8, 1)
 
-            steps_taken += 1
-            if term or trun or steps_taken >= num_steps:
-                break
+        for i in range(num_envs):
+            frame_stacks[i].append(next_obs[i])
+            single_ssp = torch.stack(list(frame_stacks[i]), dim=0) # (4, 84, 84)
+            single_ss = stacked_obs[i] # (4, 84, 84)
+            memory.append(single_ss, actions[i], single_ssp, rewards[i], dones[i])
+            stacked_obs[i] = single_ssp # num_envs x (4, 84, 84)
 
-    log(log_dir, f"\tWarmup completed in: {time.time() - st:.4f}, Collected Observations: {num_steps}", console_log=VC.debug_mode, no_log=True)
+            if dones[i].item():
+                if infos['lives'][i] == 0:
+                    obs, _, envs.reset(indices=[i])
+                    obs = preprocess_frames(obs, device)
+                    frame_stacks[i] = deque([obs[i]]*4, maxlen=4)
+                    stacked_obs[i] = torch.stack(list(frame_stacks[i]), dim=0) # (num_envs, 4, 84, 84)
+                else:
+                    env = envs.envs[i]
+                    obs, _, _, _, _ = env.step(get_fire_action(env))
+                    obs = preprocess_frames([obs], device) # (84, 84)
+                    frame_stacks[i] = deque([obs[0]]*4, maxlen=4) # reset framebuffer
+
+        steps += 1*num_envs
+
+    log(log_dir, f"\tWarmup completed in: {time.time() - st:.4f}, Total Steps: {steps}", console_log=True, no_log=True)
+    envs.close()
 
 def estimate_codebook_usage_probs(model, x):
     z_e = model.encoder(x)
@@ -72,12 +99,12 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
 
         x, _, _, _, _ = sample_memory(memory, batch_size)
         x_r, vq_loss = model(x)
-        probs = estimate_codebook_usage_probs(model, x)
-        eb = entropy_bonus(probs)
-        up = usage_penalty(model, probs)
+        #probs = estimate_codebook_usage_probs(model, x)
+        #eb = entropy_bonus(probs)
+        #up = usage_penalty(model, probs)
 
         recon_loss = F.mse_loss(x_r, x, reduction='sum')
-        loss = recon_loss + vq_loss + up + eb
+        loss = recon_loss + vq_loss # + up + eb
 
         optimizer.zero_grad()
         loss.backward()
@@ -85,15 +112,16 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
 
         recon_loss_list.append(recon_loss.item())
         vq_loss_list.append(vq_loss.item())
-        entropy_bonus_list.append(eb)
-        usage_penalty_list.append(up)
+        #entropy_bonus_list.append(eb)
+        #usage_penalty_list.append(up)
 
-        log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Usage Penalty: {up:.4f}, Entropy Bonus: {eb:.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
+        # log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Usage Penalty: {up:.4f}, Entropy Bonus: {eb:.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
+        log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
         if iteration > max_iterations - 1 or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
             break
 
     log(log_dir, f"\tModel training completed in: {time.time() - ast}", console_log=True, no_log=True)
-    return recon_loss_list, vq_loss_list, entropy_bonus_list, usage_penalty_list
+    return recon_loss_list, vq_loss_list, #entropy_bonus_list, usage_penalty_list
 
 def initial_model_training(memory, args, epoch, seed, log_dir, device, usage_log=None):
     model = VQVAE().to(device)
@@ -111,18 +139,18 @@ def additional_model_training(model, optimizer, memory, args, epoch, seed, log_d
     plot_codebook_usage(model, memory, log_dir, epoch, seed, usage_log=usage_log)
     return loss
 
-def select_action_eval(model, action_space, pi, s):
-    model.eval()
-    ds = discretize(model, s)
-    if ds in pi:
-        return pi.get(ds)
-    else:
-        return action_space.sample()
-
-def eval_planner(model, pi, args, video, seed, device, epoch, log_dir):
-    model.eval()
+def get_fire_action(env, fire_action=[]):
+    if fire_action:
+        return fire_action[0]
+    
+    for i in range(env.action_space.n):
+        if env.unwrapped.get_action_meanings()[i] == "FIRE":
+            fire_action.append(i)
+            return fire_action[0]
+    
+def eval_planner(mdp, args, video, seed, device, epoch, log_dir):
     log(log_dir, "\tEvaluating Model...", console_log=True, no_log=True)
-    env, action_space, s, info = create_env(args.env_name, seed=seed, video=video)
+    env, action_space, s, _ = create_eval_env(args.env_name, seed=seed, video=video) # Already wrappped, produces gray scaled (84, 84) frames
     s = torch.from_numpy(s).to(device) # (84, 84)
     frame_stack = deque([s] * 4, maxlen=4) # (4, 84, 84)
 
@@ -130,24 +158,23 @@ def eval_planner(model, pi, args, video, seed, device, epoch, log_dir):
     steps = 0
     st = time.time()
     while True:
-        s = torch.stack(list(frame_stack), dim=0).unsqueeze(0) # (1, 4, 84, 84)
-        a = select_action_eval(model, action_space, pi, s)
+        s = torch.stack(list(frame_stack), dim=0) # (4, 84, 84)
+        a = mdp.get_action(s, action_space)
         s, r, term, trun, info = env.step(a)
-        s = torch.from_numpy(s).to(device=device) # (1, 84, 84)
-        
+        s = torch.from_numpy(s).to(device) # (84, 84)
         frame_stack.append(s) # (4, 84, 84)
+        
         total_reward += r
-
         steps += 1
         lives = info["lives"]
-        log(log_dir, f"\t\tSteps Taken: {steps}, Lives: {lives}, Total Reward: {total_reward}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
+        log(log_dir, f"\t\tSteps Taken: {steps}, Action: {a}, Total Reward: {total_reward}, Lives: {lives}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
         if term or trun:
-            if info["lives"] == 0:
+            if info['lives'] == 0:
                 break
             else:
-                s, info = env.reset(seed=seed)
-                s = torch.from_numpy(s).to(device=device) # (1, 84, 84)
-                frame_stack = deque([s] * 4, maxlen=4) # (1, 84, 84)- # reset frame stack to match env being reset
+                s, _, _, _, _ = env.step(get_fire_action(env))
+                s = torch.from_numpy(s).to(device) # (84, 84)
+                frame_stack = deque([s]*4, maxlen=4) # reset framebuffer
 
     path = os.path.join(f"seed_{seed}", f"eval_epoch_{epoch}_reward_{total_reward}.mp4")
     video.save(path)
@@ -156,69 +183,61 @@ def eval_planner(model, pi, args, video, seed, device, epoch, log_dir):
     log(log_dir, f"\tEvaluation completed in: {time.time() - st:.4f}, Total Reward: {total_reward}", console_log=True, no_log=True)
     return total_reward
 
-def select_action(model, action_space, pi, s, disable_eps_greedy=False):
-    model.eval()
-
-    if not disable_eps_greedy: # Don't do epsilon calculations if it is disabled
+def select_action(mdp, action_space, obs, num_envs, disable_eps_greedy=False):
+    if not disable_eps_greedy:
         VC.eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * VC.steps_done / EPS_DECAY)
-    
-    VC.steps_done += 1
+    VC.steps_done += 1*num_envs
     
     if disable_eps_greedy or random.random() > VC.eps_threshold:
-        ds = discretize(model, s)
-        return pi.get(ds) if ds in pi.keys() else action_space.sample()
+        return np.stack([mdp.get_action(obs[i], action_space[i]) for i in range(num_envs)]) # explotive choice
     else:
-        return action_space.sample() # random eps-greedy action
-    
-def collect_transitions(model, game, pi, memory, num_transitions, device, log_dir, episode_reward_list=None):
-    ast = time.time()
+        return np.stack(action_space.sample()) # random eps-greedy action
+
+def collect_transitions(mdp, game, memory, num_transitions, device, log_dir, episode_reward_list=None, num_envs=6, disable_eps_greedy=True):
     log(log_dir, "\tCollecting Transitions...", console_log=True, no_log=True)
-    model.eval()
+    envs, action_space, _, _ = create_vectorized_envs(game, num_envs=num_envs) # (num_envs, H, W, 3)
 
     transitions = []
     total_reward_list = []
-    
-    while True:
-        env, action_space, s, info = create_env(game) # (84, 84)
-        s = torch.from_numpy(s).to(device) # (84, 84)
-        frame_stack = deque([s] * 4, maxlen=4) # (4, 84, 84)
+    st = time.time()
+    obs, _, = envs.reset()
+    obs = preprocess_frames(obs, device) # (num_envs, 84, 84)
+    frame_stacks = [deque([obs[i]]*4, maxlen=4) for i in range(num_envs)] # (num_envs, 4, 84, 84)
+    stacked_obs = torch.stack([torch.stack(list(fs), dim=0) for fs in frame_stacks]) # (num_envs, 4, 84, 84)
 
-        steps = 0
-        st = time.time()
-        total_reward = 0
+    steps, total_avg_reward = 0, 0
+    while steps < num_transitions:
+        actions = select_action(mdp, action_space, stacked_obs, num_envs, disable_eps_greedy=disable_eps_greedy) # (num_evns, )
+        next_obs, rewards, terms, truncs, infos = envs.step(actions)
+        next_obs = preprocess_frames(next_obs, device) # (num_envs, 84, 84)
+        rewards, actions, dones = to_tensor(rewards, actions, [t1 or t2 for t1, t2 in zip(terms, truncs)], device) # (8, 1)
 
-        while True:
-            s = torch.stack(list(frame_stack), dim=0).unsqueeze(0) # (1, 4, 84, 84)
-            a = select_action(model, action_space, pi, s, disable_eps_greedy=True) # Disable eps-greedy policy behaviour 
-            # a = select_action(model, action_space, pi, s, disable_eps_greedy=False) # Enable eps-greedy policy bahaviour
-            sp, r, term, trun, info = env.step(a)
-            sp, a, r, d = convert_to_tensor(sp, a, r, trun, term, device)
-            frame_stack.append(sp)
-            sp = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
+        for i in range(num_envs):
+            frame_stacks[i].append(next_obs[i])
+            single_ssp = torch.stack(list(frame_stacks[i]), dim=0) # (4, 84, 84)
+            single_ss = stacked_obs[i] # (4, 84, 84)
+            memory.append(single_ss, actions[i], single_ssp, rewards[i], dones[i]) 
+            transitions.append((single_ss, actions[i], single_ssp, rewards[i], dones[i])) # store transitions for MDP update
+            stacked_obs[i] = single_ssp # num_envs x (84, 84)
 
-            memory.append(s, a, sp, r, d)
-            transitions.append(Transition(s, a, sp, r, d)) # store transitions for MDP update
-            total_reward += r.item()
-            lives = info["lives"]
-            steps += 1
-
-            log(log_dir, f"\t\t\tSteps Taken: {steps}, Lives: {lives}, Epsilon: {VC.eps_threshold}, Reward: {r.item()}, Elapsed Time: {time.time() - st:.4f}",console_log=VC.debug_mode, no_log=True)
-
-            if term or trun:
-                if info["lives"] == 0:
-                    break
+            if dones[i].item():
+                if infos['lives'][i] == 0:
+                    obs, _, envs.reset(indices=[i])
+                    obs = preprocess_frames(obs, device)
+                    frame_stacks[i] = deque([obs[i]]*4, maxlen=4)
+                    stacked_obs[i] = torch.stack(list(frame_stacks[i]), dim=0) # (num_envs, 4, 84, 84)
                 else:
-                    s, info = env.reset()
-                    s = torch.from_numpy(s).to(device)
-                    frame_stack = deque([s] * 4, maxlen=4)
+                    env = envs.envs[i]
+                    obs, _, _, _, _ = env.step(get_fire_action(env))
+                    obs = preprocess_frames([obs], device)
+                    frame_stacks[i] = deque([obs[0]]*4, maxlen=4) # reset framebuffer
 
-        log(log_dir, f"\t\tEpisode completed in: {time.time() - st:.4f}, Steps Taken: {steps}, Epsilon: {VC.eps_threshold}, Total Reward: {total_reward}", console_log=VC.debug_mode, no_log=True)
-        
-        total_reward_list.append(total_reward)
+        total_avg_reward += sum(r.item() for r in rewards)
+        steps += 1*num_envs
 
-        if len(transitions) >= num_transitions:
-            break
-
-    log(log_dir, f"\tTransitions collected in: {time.time() - ast:.4f}, Total Steps: {len(transitions)}", console_log=True, no_log=True)
+    total_reward_list.append(total_avg_reward / num_envs)
+    eps_thres = VC.eps_threshold if not disable_eps_greedy else "None"
+    log(log_dir, f"\tTransitions collected in: {time.time() - st:.4f}, Total Steps: {len(transitions)}, Epsilon: {eps_thres}", console_log=True, no_log=True)
     episode_reward_list += total_reward_list
+    envs.close()
     return transitions

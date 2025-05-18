@@ -120,7 +120,7 @@ def log(log_dir, message, console_log=False, show_steps=False, show_eps=False, s
     with open(log_path, VC.get_write_mode()) as f:
         f.write(message + "\n")
 
-def create_env(game, seed=None, video=None): # from previous project
+def get_env(game):
     game_envs = {
         "breakout": "BreakoutNoFrameskip-v4",
         "tennis": "TennisNoFrameskip-v4",
@@ -128,13 +128,18 @@ def create_env(game, seed=None, video=None): # from previous project
         "boxing": "BoxingNoFrameskip-v4",
         "pong": "PongNoFrameskip-v4"
     }
+    return game_envs.get(game, "BreakoutNoFrameskip-v4")
 
-    env = gym.make(game_envs.get(game, "BreakoutNoFrameskip-v4"))
+def create_eval_env(game, seed=None, video=None): # from previous project
+    env = gym.make(get_env(game))
     env = AtariWrapper(env) if not video else AtariWrapper(env, video=video)
     obs, info = env.reset(seed=seed) if seed is not None else env.reset()
-    action_space = env.action_space
-    
-    return env, action_space, obs, info
+    return env, env.action_space, obs, info
+
+def create_vectorized_envs(game, seed=None, num_envs=8):
+    envs = gym.make_vec(get_env(game), num_envs, vectorization_mode="sync")
+    obs, info = envs.reset(seed=seed) if seed is not None else envs.reset()
+    return envs, envs.action_space, obs, info
 
 def compute_known_transition_percentage(N_sa, states, actions, M):
     total_possible = len(states) * len(actions)
@@ -143,9 +148,9 @@ def compute_known_transition_percentage(N_sa, states, actions, M):
 
 def extract_and_batch(transitions):
     batch = Transition(*zip(*transitions)) # batch-array of Transitions -> Transition of batch-arrays.
-    return (torch.cat(batch.state), # state_batch (bs, 4, 84, 84)
+    return (torch.cat([t.unsqueeze(0) for t in batch.state]), # state_batch (bs, 4, 84, 84)
             torch.cat(batch.action).unsqueeze(1), # action_batch (bs, 1)
-            torch.cat(batch.next_state), # next_state_batch (bs, 4, 84, 84)
+            torch.cat([t.unsqueeze(0) for t in batch.next_state]), # next_state_batch (bs, 4, 84, 84)
             torch.cat(batch.reward).unsqueeze(1), # reward_batch (bs, 1)
             torch.cat(batch.done).unsqueeze(1), # done_batch (bs, 1)
     )

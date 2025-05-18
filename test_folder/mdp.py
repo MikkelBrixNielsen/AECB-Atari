@@ -2,207 +2,138 @@ import torch
 import time
 import math
 from collections import defaultdict, Counter
-from utils import VC, compute_known_transition_percentage, log, extract_and_batch
+from utils import VC, compute_known_transition_percentage, log
+import numpy as np
 
-def validate_transition_probabilities(P, tolerance=1e-6, log_dir=None, console_log=False):
-    invalid_pairs = []
+class MDP:
+    def __init__(self, model, device, log_dir, gamma=0.99, min_visits=1, R_max=1.0, use_hash=True):
+        self.gamma = gamma
+        self.R_max = R_max
+        self.M = min_visits
+        self.model = model
+        self.device = device
+        self.log_dir = log_dir
+        self.use_hash = use_hash
 
-    for (s, a), transitions in P.items():
-        total_prob = sum(transitions.values())
-        if abs(total_prob - 1) > tolerance:
-            invalid_pairs.append(((s, a), total_prob))
+        self.N_sa = defaultdict(int)
+        self.N_sas = defaultdict(Counter)
+        self.rewards_sum = defaultdict(float)
+        self.terminal_counts = defaultdict(int)
 
-    if invalid_pairs:
-        msg = f"\t\t[WARNING] {len(invalid_pairs)} (s, a) pairs have invalid transition probability sums:"
-        if log_dir:
-            log(log_dir, msg, console_log=console_log, no_log=True)
-            for (s, a), total in invalid_pairs:
-                log(log_dir, f"\t(s, a) = ({s}, {a}) → total probability = {total:.6f}", console_log=False, no_log=True)
-        else:
-            print(msg)
-            for i, ((s, a), total) in enumerate(invalid_pairs):
-                print(f"\t\t\tPair {i} total probability = {total:.6f}")
-    else:
-        msg = "\t\t[OK] All transition probability distributions sum to ~1.0"
-        if log_dir:
-            log(log_dir, msg, console_log=console_log, no_log=True)
-        else:
-            print(msg)
+        self.unique_states = set()
+        self.dirty = set()
+        self.num_actions = float('-inf')
 
-    return len(invalid_pairs) == 0
+        self.state2idx = {}
+        self.idx2state = []
+        self.num_states = 0
 
-def discretize(model, s):
-    model.eval()
-    with torch.no_grad():
-        z_e = model.encoder(s)
-        _, _, z_q_indices = model.quantizer(z_e)
-        z_q_indices = z_q_indices.cpu().numpy()
+        self.P = None
+        self.R = None
+        self.D = None
+        self.V = None
+        self.pi = {}
 
-    return z_q_indices.flatten().tobytes()
-
-def discretize_multiple(model, s_batch):
-    model.eval()
-    with torch.no_grad():
-        z_e = model.encoder(s_batch)
-        _, _, z_q_indices = model.quantizer(z_e)
-        z_q_indices = z_q_indices.cpu().numpy()
-
-    return [z_q_indices[i].flatten().tobytes() for i in range(z_q_indices.shape[0])]
-
-
-def discretized_extract_and_batch(model, transitions, batch_size=128): # Larger batch increases speed but also memory usage
-    model.eval()
-    ds_list, a_list, dsp_list, r_list, d_list = [], [], [], [], []
-
-    for i in range(0, len(transitions), batch_size):
-        mini_batch = transitions[i:i+batch_size]
-        s_batch, a_batch, sp_batch, r_batch, d_batch = extract_and_batch(mini_batch)
-
-        with torch.no_grad():
-            ds_batch = discretize_multiple(model, s_batch)
-            dsp_batch = discretize_multiple(model, sp_batch)
-
-        ds_list.extend(ds_batch)
-        a_list.extend(a_batch)
-        dsp_list.extend(dsp_batch)
-        r_list.extend(r_batch)
-        d_list.extend(d_batch)
-
-    return zip(ds_list, a_list, dsp_list, r_list, d_list)
-
-def is_known(N_sa_val, M):
-    return N_sa_val >= M
-
-# P(s'|s, a) = { N(s, a, s) / N(s, a)    if N(s, a) >= M  |  R(s, a) = { R_sum / N(s, a)     if N(s, a) >= M  |  D(s, a) = { 1 if D_sum / N(s, a) > 0.5 else 0     if N(s, a) >= M
-#              { I[s' = s]}              otherwise        |            { R_max               otherwise        |            { 0                                     otherwise
-# Note: The otherwise part of R and D is provided by the default behaviour of defaultdicts, so can be omitted 
-def update_P_R_D(items, N_sa, N_sas, R_sum, D_sum, states, actions, s_max, R_max, P, R, D, M=1):
-    for (s, a), total in items:
-        if is_known(total, M):
-            P[(s, a)] = {
-                sp: N_sas[(s, a, sp)] / total
-                for sp in states
-                if N_sas[(s, a, sp)] > 0 # keep P as sparse as possible
-            }
-            R[(s, a)] = R_sum[(s, a)] / total
-            D[(s, a)] = 1 if D_sum[(s, a)] / total > 0.5 else 0
-
-    # add self loop to unknown (s, a)-pairs
-    for s in states: # observed discritized states
-        for a in actions: # full action space from env
-            if (s, a) not in P.keys() or not is_known(N_sa[(s, a)], M):
-                P[(s, a)] = {s_max: 1.0}                            # Optimistic transition to absorbing state
-                R[(s, a)] = R_max / math.sqrt(N_sa[(s, a)] + 1)     # R_max value
-                D[(s, a)] = 0                                       # Assume non-terminal
-
-    return P, R, D
-
-def compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, actions, s_max, M=1, R_max=1.0):
-    P = defaultdict(dict)
-    R = defaultdict(lambda: R_max)    # R-MAX fallback
-    D = defaultdict(int)              # defaults to 0
-    return update_P_R_D(N_sa.items(), N_sa, N_sas, R_sum, D_sum, states, actions, s_max, R_max, P, R, D, M)
-
-def create_mdp(model, actions, transitions, log_dir, M=1, R_max=1.0):
-    st = time.time()
-    log(log_dir, "\tCreating MDP...", console_log=True, no_log=True)
-    processed_transitions = discretized_extract_and_batch(model, transitions)
-
-    N_sa = Counter()
-    N_sas = Counter()
-    R_sum = Counter()
-    D_sum = Counter()
-    states = set()
-
-    for s, a, sp, r, d in processed_transitions:
-        a, r, d = a.item(), r.item(), d.item() # tensor -> value
-        N_sa[(s, a)] += 1
-        N_sas[(s, a, sp)] += 1
-        R_sum[(s, a)] += r
-        if d:
-            D_sum[(s, a)] += 1
-        states.update([s, sp])
-
-    s_max = b"\xff" * model.quantizer.num_embeddings
-
-    P, R, D = compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, actions, s_max, M, R_max)
-
-    if VC.debug_mode:
-        validate_transition_probabilities(P, tolerance=1e-6, log_dir=None, console_log=VC.debug_mode)
-    VC.transition_percentage = f"Percentage of Transitions Known: {compute_known_transition_percentage(N_sa, states, actions, M):.4f}%"
-    log(log_dir, f"\tMDP created in {time.time() - st:.4f}, {VC.transition_percentage}", console_log=True, no_log=True)
-
-    return {
-        'N_sa': N_sa,           # Count of observed (s, a)-pairs
-        'N_sas': N_sas,         # Count of observed (s, a, s')-pairs
-        'R_sum': R_sum,         # Total reward for all observed (s, a)-pairs
-        'D_sum': D_sum,         # Total number of observed s, a)-pairs leading to a terminal state
-        'P': P,                 # Estimated P(s'|s, a)
-        'R': R,                 # Estimated R(s, a)
-        'D': D,                 # Estimation of whether (s, a) -> terminal state
-        'states': states,       # Observed discretized states
-        'actions': actions,     # Iterable containing all possible actions in env
-        's_max': s_max,         # Optimistic absorbing state
-        'R_max': R_max          # R_max used when creating MDP 
-    }
-
-def update_mdp(mdp, model, transitions, log_dir, M=1):
-    st = time.time()
-    log(log_dir, "\tUpdating MDP...", console_log=True, no_log=True)
-    updated_sa = set()
-    processed_transitions = discretized_extract_and_batch(model, transitions)
-
-    for s, a, sp, r, d in processed_transitions:
-        a, r, d = a.item(), r.item(), d.item()
-        mdp['N_sa'][(s, a)] += 1
-        mdp['N_sas'][(s, a, sp)] += 1
-        mdp['R_sum'][(s, a)] += r
-        if d:
-            mdp['D_sum'][(s, a)] += 1
-        mdp['states'].update([s, sp])
-        updated_sa.add((s, a))
-
-    items = [((s, a), mdp['N_sa'][(s, a)]) for (s, a) in updated_sa]
-    mdp['P'], mdp['R'], mdp['D'] = update_P_R_D(items, mdp['N_sa'], mdp['N_sas'], mdp['R_sum'], mdp['D_sum'], mdp['states'], mdp['actions'], mdp['s_max'], mdp['R_max'], mdp['P'], mdp['R'], mdp['D'], M)
-
-    if VC.debug_mode:
-        validate_transition_probabilities(mdp['P'], tolerance=1e-6, log_dir=None, console_log=VC.debug_mode)
-    VC.transition_percentage = f"Transition Percentage: {compute_known_transition_percentage(mdp['N_sa'], mdp['states'], mdp['actions'], M):.4f}%"
-    log(log_dir, f"\tMDP update completed in: {time.time() - st:.4f}, {VC.transition_percentage}", console_log=True, no_log=True)
-
-def VI(P, R, states, actions, log_dir, V, gamma=0.99, max_iterations=10000, tol=1e-6, max_patience=10, s_max=None, R_max=1.0):
-    ast = time.time()
-    log(log_dir, "\tDoing Value Iteration...", console_log=True, no_log=True)
-    Q = defaultdict(float)
-    pi = {}
-    patience = 0
-    prev_delta = float('inf')
-
-    if s_max is not None:
-        V[s_max] = R_max / (1-gamma) # Value of optimistic absorbing state set to max discounted reward e.g. R_max=1, gamma=0.99 -> V[s_max]=100
-
-    for i in range(max_iterations):
+    def _build(self):
         st = time.time()
-        delta = 0
-        for s in states:
-            q_max = float('-inf')
-            best_a = None
-            for a in actions:
-                q = sum([p * (R[(s, a)] + (gamma * V[sp])) for sp, p in P[(s, a)].items()])
-                if q > q_max:
-                    q_max = q
-                    best_a = a
-                Q[(s, a)] = q
-            delta = max(delta, abs(q_max - V[s]))
-            V[s] = q_max
-            pi[s] = best_a
+        log(self.log_dir, "\t\tCalculating P, R, D...", console_log=VC.debug_mode, no_log=True)
+        
+        for (s, a) in self.dirty:
+            self.unique_states.add(s)
+            self.unique_states.update(self.N_sas[(s, a)].keys())
 
-        log(log_dir, f"\t\tVI - Round: {i}, Delta: {delta}, Target: {tol}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
-        if delta < tol or patience >= max_patience: # convergence check
-            break
-        if (delta == prev_delta):
-            patience += 1
-        prev_delta = delta
+        self.idx2state = list(self.unique_states)
+        self.state2idx = {s: i for i, s in enumerate(self.idx2state)}
+        self.num_states = len(self.idx2state)
+        self.num_actions = max(max([a for (_, a) in self.dirty]) + 1, self.num_actions)
 
-    log(log_dir, f"\tVI completed in: {time.time() - ast:.4f}", console_log=True, no_log=True)
-    return pi, V
+        self.P = np.zeros((self.num_states, self.num_actions, self.num_states), dtype=np.float32)
+        self.R = np.full((self.num_states, self.num_actions), self.R_max, dtype=np.float32)
+        self.D = np.zeros((self.num_states, self.num_actions), dtype=np.float32)
+
+        for (s, a) in self.dirty:
+            s_idx = self.state2idx[s]
+            total = self.N_sa[(s, a)]
+            if total < self.M:
+                self.P[s_idx, a, s_idx] = 1.0
+                self.R[s_idx, a] = self.R_max / (self.gamma * (total / self.M))
+                self.D[s_idx, a] = 1.0 if self.terminal_counts[(s, a)] / max(1, total) > 0.5 else 0.0
+                continue
+            for sp, count in self.N_sas[(s, a)].items():
+                sp_idx = self.state2idx[sp]
+                self.P[s_idx, a, sp_idx] = count / total
+            self.R[s_idx, a] = self.rewards_sum[(s, a)] / total
+            self.D[s_idx, a] = self.terminal_counts[(s, a)] / total
+
+        self.dirty.clear()
+        log(self.log_dir, f"\t\tCompleted calculating P, R, D in {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
+    
+    def _encode_and_quantize(self, s_batch):
+        with torch.no_grad():
+            _, _, z_q_indices = self.model.quantizer(self.model.encoder(s_batch))
+            return z_q_indices
+
+    def _encode_state(self, z):
+        if isinstance(z, torch.Tensor):
+            z = z.cpu().numpy()
+        return z.flatten().tobytes() if self.use_hash else tuple(z.flatten().tolist())
+
+    def _add_transition(self, z, a, z_next, r, done):
+        s = self._encode_state(z)
+        sp = self._encode_state(z_next)
+        self.N_sas[(s, a)][sp] += 1
+        self.rewards_sum[(s, a)] += r
+        self.N_sa[(s, a)] += 1
+        if done:
+            self.terminal_counts[(s, a)] += 1
+        self.dirty.add((s, a))
+
+    def _add_transitions_aux(self, transitions, current, goal):
+        self.model.eval()
+        s_batch, a_batch, sp_batch, r_batch, d_batch = zip(*transitions)
+        z_q = self._encode_and_quantize(torch.stack(s_batch).to(self.device))
+        zp_q = self._encode_and_quantize(torch.stack(sp_batch).to(self.device))
+        transitions = list(zip(z_q, a_batch, zp_q, r_batch, d_batch))
+
+        for z_q, a, zp_q, r, d in transitions:
+            log(self.log_dir, f"\t\t\tAdding transition: {current + 1} / {goal}...", console_log=VC.debug_mode, no_log=True)
+            self._add_transition(z_q, a.item(), zp_q, r.item(), d.item())
+            current += 1
+    
+    def _add_transitions(self, transitions, mini_batch_size):
+        st = time.time()
+        log(self.log_dir, f"\t\t Adding transitions...", console_log=VC.debug_mode, no_log=True)
+        num_transitions = len(transitions)
+        for i in range(0, num_transitions, mini_batch_size):
+            mini_batch = transitions[i : i + mini_batch_size]
+            self._add_transitions_aux(mini_batch, i, num_transitions)
+        log(self.log_dir, f"\t\tCompleted adding transitions in {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
+
+    def update(self, transitions, mini_batch_size=256):
+        ast = time.time()
+        log(self.log_dir, "\tUpdating MDP...", console_log=True, no_log=True)
+        self._add_transitions(transitions, mini_batch_size)
+        self._build()
+        log(self.log_dir, f"\tMDP updated completed in {time.time() - ast:.4f}...", console_log=True, no_log=True)
+
+    def get_action(self, s, action_space): # expects a single frame on form (4, 84, 84) 
+        s_idx = self.state2idx.get(self._encode_state(self._encode_and_quantize(s.unsqueeze(0))), None)
+        return self.pi[s_idx] if s_idx and s_idx < len(self.pi) else action_space.sample()
+
+    def solve(self, tol=1e-6, max_iterations=10000):
+        ast = time.time()
+        log(self.log_dir, "\tDoing value iteration...", console_log=True, no_log=True)
+        if self.V is None:
+            self.V = np.zeros(self.num_states, dtype=np.float32)
+
+        for i in range(max_iterations):
+            st = time.time()
+            new_V = np.max(self.R + self.gamma * np.einsum('sak,k->sa', self.P, self.V), axis=1)
+            delta = np.max(np.abs(new_V - self.V))
+            self.V[:] = new_V # in-place update
+            log(self.log_dir, f"\t\tVI round {i}: Delta: {delta:.6f}, Target: {tol:.6f}, Duration: {time.time() - st:.4f}",  console_log=VC.debug_mode, no_log=True)
+            if delta < tol:
+                break
+
+        self.pi = np.argmax(self.R + self.gamma * np.einsum('sak,k->sa', self.P, self.V), axis=1)
+        log(self.log_dir, f"\tValue iteration completed in {time.time() - ast:.4f}", console_log=True, no_log=True)
