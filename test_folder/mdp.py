@@ -120,7 +120,7 @@ class MDP:
         s_idx = self.state2idx.get(self._encode_state(self._encode_and_quantize(s.unsqueeze(0))), None)
         return self.pi[s_idx] if s_idx and s_idx < len(self.pi) else action_space.sample()
 
-    def solve(self, tol=1e-6, max_iterations=10000):
+    def solve(self, tol=1e-6, max_iterations=10000): # Currently does value iteration 
         ast = time.time()
         log(self.log_dir, "\tDoing value iteration...", console_log=True, no_log=True)
         if self.V is None:
@@ -128,7 +128,7 @@ class MDP:
 
         for i in range(max_iterations):
             st = time.time()
-            new_V = np.max(self.R + self.gamma * np.einsum('sak,k->sa', self.P, self.V), axis=1)
+            new_V = np.max(self.R + self.gamma * np.einsum('sak,k->sa', self.P, self.V) * (1 - self.D), axis=1)
             delta = np.max(np.abs(new_V - self.V))
             self.V[:] = new_V # in-place update
             log(self.log_dir, f"\t\tVI round {i}: Delta: {delta:.6f}, Target: {tol:.6f}, Duration: {time.time() - st:.4f}",  console_log=VC.debug_mode, no_log=True)
