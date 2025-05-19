@@ -33,9 +33,19 @@ def to_tensor(items1, items2, items3, device):
     ts = zip(*[_tensorize(e1, e2, e3, device) for e1, e2, e3 in zip(items1, items2, items3)])
     return [torch.stack(t) for t in ts]
 
+def reset_or_fire(envs, i, infos, device, frame_stacks):
+    env = envs.envs[i]
+    if infos['lives'][i] == 0:
+        obs, _, = env.reset()
+    else:
+        obs, _, _, _, _ = env.step(get_fire_action(env))
+    obs = preprocess_frames([obs], device)
+    frame_stacks[i] = deque([obs[0]]*4, maxlen=4)
+    return torch.stack(list(frame_stacks[i]), dim=0) # (num_envs, 4, 84, 84)
+
 def warmup(game, memory, device, log_dir, num_steps=10000, num_envs=6):
-    log(log_dir, "\tWarmup...", console_log=True, no_log=True)
     envs, action_space, _, _ = create_vectorized_envs(game, num_envs=num_envs) # (num_envs, H, W, 3)
+    log(log_dir, "\tWarmup...", console_log=True, no_log=True)
 
     st = time.time()
     obs, _, = envs.reset()
@@ -58,16 +68,7 @@ def warmup(game, memory, device, log_dir, num_steps=10000, num_envs=6):
             stacked_obs[i] = single_ssp # num_envs x (4, 84, 84)
 
             if dones[i].item():
-                if infos['lives'][i] == 0:
-                    obs, _, envs.reset(indices=[i])
-                    obs = preprocess_frames(obs, device)
-                    frame_stacks[i] = deque([obs[i]]*4, maxlen=4)
-                    stacked_obs[i] = torch.stack(list(frame_stacks[i]), dim=0) # (num_envs, 4, 84, 84)
-                else:
-                    env = envs.envs[i]
-                    obs, _, _, _, _ = env.step(get_fire_action(env))
-                    obs = preprocess_frames([obs], device) # (84, 84)
-                    frame_stacks[i] = deque([obs[0]]*4, maxlen=4) # reset framebuffer
+                stacked_obs[i] = reset_or_fire(envs, i, infos, device, frame_stacks)
 
         steps += 1*num_envs
 
@@ -99,9 +100,9 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
 
         x, _, _, _, _ = sample_memory(memory, batch_size)
         x_r, vq_loss = model(x)
-        #probs = estimate_codebook_usage_probs(model, x)
-        #eb = entropy_bonus(probs)
-        #up = usage_penalty(model, probs)
+        # probs = estimate_codebook_usage_probs(model, x)
+        # eb = entropy_bonus(probs)
+        # up = usage_penalty(model, probs)
 
         recon_loss = F.mse_loss(x_r, x, reduction='sum')
         loss = recon_loss + vq_loss # + up + eb
@@ -112,8 +113,8 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
 
         recon_loss_list.append(recon_loss.item())
         vq_loss_list.append(vq_loss.item())
-        #entropy_bonus_list.append(eb)
-        #usage_penalty_list.append(up)
+        # entropy_bonus_list.append(eb)
+        # usage_penalty_list.append(up)
 
         # log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Usage Penalty: {up:.4f}, Entropy Bonus: {eb:.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
         log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
@@ -121,7 +122,7 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
             break
 
     log(log_dir, f"\tModel training completed in: {time.time() - ast}", console_log=True, no_log=True)
-    return recon_loss_list, vq_loss_list, #entropy_bonus_list, usage_penalty_list
+    return recon_loss_list, vq_loss_list, entropy_bonus_list, usage_penalty_list
 
 def initial_model_training(memory, args, epoch, seed, log_dir, device, usage_log=None):
     model = VQVAE().to(device)
@@ -221,16 +222,7 @@ def collect_transitions(mdp, game, memory, num_transitions, device, log_dir, epi
             stacked_obs[i] = single_ssp # num_envs x (84, 84)
 
             if dones[i].item():
-                if infos['lives'][i] == 0:
-                    obs, _, envs.reset(indices=[i])
-                    obs = preprocess_frames(obs, device)
-                    frame_stacks[i] = deque([obs[i]]*4, maxlen=4)
-                    stacked_obs[i] = torch.stack(list(frame_stacks[i]), dim=0) # (num_envs, 4, 84, 84)
-                else:
-                    env = envs.envs[i]
-                    obs, _, _, _, _ = env.step(get_fire_action(env))
-                    obs = preprocess_frames([obs], device)
-                    frame_stacks[i] = deque([obs[0]]*4, maxlen=4) # reset framebuffer
+                stacked_obs[i] = reset_or_fire(envs, i, infos, device, frame_stacks)
 
         total_avg_reward += sum(r.item() for r in rewards)
         steps += 1*num_envs

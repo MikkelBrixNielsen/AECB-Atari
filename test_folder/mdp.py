@@ -93,10 +93,8 @@ class MDP:
         s_batch, a_batch, sp_batch, r_batch, d_batch = zip(*transitions)
         z_q = self._encode_and_quantize(torch.stack(s_batch).to(self.device))
         zp_q = self._encode_and_quantize(torch.stack(sp_batch).to(self.device))
-        transitions = list(zip(z_q, a_batch, zp_q, r_batch, d_batch))
-
-        for z_q, a, zp_q, r, d in transitions:
-            ending = '\n' if current == 0 else '\r'
+        
+        for z_q, a, zp_q, r, d in zip(z_q, a_batch, zp_q, r_batch, d_batch):
             log(self.log_dir, f"\t\t\tAdding transition: {current + 1} / {goal}...", console_log=VC.debug_mode, no_log=True)
             self._add_transition(z_q, a.item(), zp_q, r.item(), d.item())
             current += 1
@@ -115,7 +113,8 @@ class MDP:
         log(self.log_dir, "\tUpdating MDP...", console_log=True, no_log=True)
         self._add_transitions(transitions, mini_batch_size)
         self._build()
-        log(self.log_dir, f"\tMDP updated completed in {time.time() - ast:.4f}...", console_log=True, no_log=True)
+        VC.transition_percentage = f"Transitions known: {compute_known_transition_percentage(self.N_sa, self.num_states, self.num_actions, self.M)}"
+        log(self.log_dir, f"\tMDP updated completed in {time.time() - ast:.4f}, VC.transition_percentage", console_log=True, no_log=True)
 
     def get_action(self, s, action_space): # expects a single frame on form (4, 84, 84) 
         s_idx = self.state2idx.get(self._encode_state(self._encode_and_quantize(s.unsqueeze(0))), None)

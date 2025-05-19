@@ -23,7 +23,6 @@ def main():
         log(LOG_DIR, f"seed: {seed}, arguments: {ARGS}".replace("Namespace", ""))
         usage_log, recon_loss_list, vq_loss_list, eval_reward_list, episode_reward_list = [], [], [], [], []
         memory, video = MemoryBuffer(50000), VideoRecorder(LOG_DIR)
-        _, action_space, _, _  = create_eval_env(ARGS.env_name) # env, action_space, s, info
         warmup(ARGS.env_name, memory, DEVICE, LOG_DIR, ARGS.warmup)
         model, optimizer, loss = initial_model_training(memory, ARGS, 0, seed, LOG_DIR, DEVICE, usage_log)
         append_loss([recon_loss_list, vq_loss_list, eval_reward_list, episode_reward_list], loss)

@@ -79,7 +79,7 @@ def create_argparser(): # modified from previous project
     parser.add_argument('--epoch', default=10001, type=int, help="number of training epoch")
     parser.add_argument('--batch-size', default=32, type=int, help="batch size")
     parser.add_argument('--eval-cycle', default=10, type=int, help="epoch before retraining VQVAE")
-    parser.add_argument('--transitions', default=1, type=int, help="number of transitions to do before mdp rebuild")
+    parser.add_argument('--transitions', default=2500, type=int, help="number of transitions to do before mdp rebuild")
     parser.add_argument('--VQVAE-cycle', default=1000, type=int, help="number of epochs before model is retrained")
     parser.add_argument('--MDP-cycle', default=1000, type=int, help="number of epochs before mdp is recreated")
     parser.add_argument('--max-iterations', default=25000, type=int, help="max iterations VQVAE runs per training cycle")
@@ -142,7 +142,7 @@ def create_vectorized_envs(game, seed=None, num_envs=8):
     return envs, envs.action_space, obs, info
 
 def compute_known_transition_percentage(N_sa, states, actions, M):
-    total_possible = len(states) * len(actions)
+    total_possible = states * actions
     known = sum([1 for (s, a) in N_sa if N_sa[(s, a)] >= M])
     return 100.0 * known / total_possible if total_possible > 0 else 0.0
 
