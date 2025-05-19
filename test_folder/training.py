@@ -21,7 +21,7 @@ def preprocess_frames(observations, device, crop_size=(34, 194, 0, 160), target_
         frame = frame[crop_size[0]:crop_size[1],crop_size[2]:crop_size[3]]
         frame = cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)  # Resize
         if normalize:
-            return frame.astype(np.float32) / 255 #normalize
+            return frame.astype(np.float32) / 255 # normalize
         else:
             return frame
     return torch.from_numpy(np.stack([process(obs) for obs in observations])).to(device)
