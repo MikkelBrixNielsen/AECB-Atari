@@ -10,6 +10,10 @@ import torch.nn.functional as F
 from collections import namedtuple, deque, defaultdict, Counter
 from torch.utils.data import DataLoader, TensorDataset
 
+import numpy as np
+from gymnasium.vector import AsyncVectorEnv # type: ignore
+from functools import partial
+
 import torch
 import random
 import argparse
@@ -66,12 +70,14 @@ class MemoryBuffer:
         return len(self.memory)
 
 # Hyperparameters
-EPS_START, EPS_END, EPS_DECAY = 1, 0.05, 50000
+EPS_START, EPS_END, EPS_DECAY = 1, 0.05, 100000
 eps_threshold = EPS_START
 steps_done = 0
 
 # Global variables
 DEBUGGER = DebugContainer(debug_mode=False)
+codebook_usage = "Not defined"
+transition_percentage = "Not defined"
 write_mode = 'w'
 
 def create_argparser(): # modified from previous project
@@ -82,8 +88,10 @@ def create_argparser(): # modified from previous project
     parser.add_argument('--batch-size', default=32, type=int, help="batch size")
     parser.add_argument('--eval-cycle', default=10, type=int, help="epoch before retraining VQVAE")
     parser.add_argument('--transitions', default=1, type=int, help="number of transitions to do before mdp rebuild")
-    parser.add_argument('--retrain-cycle', default=1000, type=int, help="number of epochs before model is retrained")
+    parser.add_argument('--VQVAE-cycle', default=1000, type=int, help="number of epochs before model is retrained")
+    parser.add_argument('--MDP-cycle', default=1000, type=int, help="number of epochs before mdp is recreated")
     parser.add_argument('--max-iterations', default=25000, type=int, help="max iterations VQVAE runs per training cycle")
+    parser.add_argument('--initial-iterations', default=10000, type=int, help="number of iterations VQVAE does in epoch 0")
     parser.add_argument('--warmup', default=10000, type=int, help="number of warmup transitions to collect")
     parser.add_argument('--min-visits', default=50, type=int, help="times (s,a)-pair has to be visited to be considered known")
     parser.add_argument('--debug', action='store_true', help="Enable debug mode")
@@ -102,17 +110,25 @@ def make_log_dir(args, seeds):
     log_path = os.path.join(log_dir, "log.txt")
     return log_dir, log_path
 
-def log(log_dir, message, console_log=False, show_steps=False, show_eps=False):
+def log(log_dir, message, console_log=False, show_steps=False, show_eps=False, show_codebook_usage=False, show_transition_percentage=False, no_log=False):
     global steps_done
-    global write_mode
     global eps_threshold
+    global codebook_usage
+    global transition_percentage
+    global write_mode
     if show_steps:
-        message = message + f", Steps done excluding warmup: {steps_done}"
+        message = message + f", Steps done w/o warmup: {steps_done}"
     if show_eps:
-        message = message + f", Epsilon: {eps_threshold}"
+        message = message + f", Epsilon: {eps_threshold:.4f}"
+    if show_codebook_usage:
+        message = message + f", {codebook_usage}"
+    if show_transition_percentage:
+        message = message + f", {transition_percentage}"
     if console_log:
         print(message)
-    os.makedirs(log_dir, exist_ok=True)  # Ensure the directory exists
+    if no_log:
+        return
+    os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "log.txt")
     with open(log_path, write_mode) as f:
         f.write(message + "\n")
@@ -125,7 +141,7 @@ def plot_runs(runs, log_dir):
 def plot_input_vs_recon(model, memory, args, epoch, log_dir, seed=0000):
     recon = None
     with torch.no_grad():
-        state_batch, _, next_state_batch, _, _ = sample_memory(memory, args)
+        state_batch, _, next_state_batch, _, _ = sample_memory(memory, args.batch_size)
         batch = torch.cat([state_batch, next_state_batch], dim=0) # (bs*2, 4, 84, 84)
         recon, _ = model(batch)
 
@@ -184,7 +200,7 @@ def plot_planner_reward(episode_reward_list, eval_reward_list, seed, log_dir):
 def compute_codebook_usage(model, dataset, batch_size=128):
     model.eval()
     usage_counter = Counter()
-    loader = DataLoader(TensorDataset(torch.stack(dataset)), batch_size=batch_size)
+    loader = DataLoader(TensorDataset(torch.stack(dataset)), batch_size=batch_size) # (4, 84, 84) -> (bs, 4, 84, 84)
 
     with torch.no_grad():
         for (obs_batch, ) in loader:
@@ -196,18 +212,27 @@ def compute_codebook_usage(model, dataset, batch_size=128):
 
     return usage_counter
 
-def plot_codebook_usage(model, memory, log_dir, epoch, seed):
+def plot_codebook_usage(model, memory, log_dir, epoch, seed, batch_size=5000, usage_log=None):
+    global codebook_usage
     num_codes = model.quantizer.num_embeddings
     dataset = []
 
-    for s, _, sp, _, _ in memory.get_all():
-        dataset.append(s)
-        dataset.append(sp)
-    
+    min_size = min(len(memory), batch_size)
+    for s, _, sp, _, _ in memory.sample(min_size):
+        dataset.append(s.squeeze(0))
+        dataset.append(sp.squeeze(0))
+
     usage_counter = compute_codebook_usage(model, dataset)
     usage = [usage_counter.get(i, 0) for i in range(num_codes)]
     used_codes = sum(1 for count in usage if count > 0)
+    codebook_usage = f"Codebook usage: {used_codes} / {num_codes}"
+    log(log_dir, f"\t" + codebook_usage, console_log=DEBUGGER.get_mode(), no_log=True)
 
+    # Track over epochs
+    if usage_log is not None:
+        usage_log.append((epoch, used_codes))
+
+    # Bar plot
     plt.figure(figsize=(12, 5))
     plt.bar(range(num_codes), usage)
     plt.xlabel("Codebook Index")
@@ -216,11 +241,32 @@ def plot_codebook_usage(model, memory, log_dir, epoch, seed):
     path = f"{log_dir}/seed_{seed}/Codebook_Usage_epoch_{epoch}"
     plt.savefig(path)
     plt.close()
-    print()
 
-    log(log_dir, f"Codebook usage: {used_codes} / {num_codes}")
+def plot_usage_log(usage_log, log_dir, seed):
+    plt.plot(*zip(usage_log))
+    plt.title("Unique Codebook Indices Used Over Time")
+    plt.xlabel("Epochs")
+    plt.ylabel("Used Codes")
+    plt.savefig(f"{log_dir}/seed_{seed}/codebook_usage_over_time.png") 
 
-def create_env(game, seed, video=None): # from previous project
+def plot_N_sa_histogram(N_sa, log_dir, epoch, seed):
+    counts = list(N_sa.values())
+    plt.figure(figsize=(10, 5))
+    plt.hist(counts, bins=30, log=True)
+    plt.xlabel("Visit Count per (s, a)")
+    plt.ylabel("Frequency")
+    plt.title("Histogram of N_sa Visit Counts")
+    path = f"{log_dir}/seed_{seed}/N_sa_Histogram_epoch_{epoch}"
+    plt.savefig(path)
+    plt.yscale('log')
+    plt.close()
+
+def compute_known_transition_percentage(N_sa, states, actions, M):
+    total_possible = len(states) * len(actions)
+    known = sum([1 for (s, a) in N_sa if N_sa[(s, a)] >= M])
+    return 100.0 * known / total_possible if total_possible > 0 else 0.0
+
+def create_env(game, seed=None, video=None): # from previous project
     game_envs = {
         "breakout": "BreakoutNoFrameskip-v4",
         "tennis": "TennisNoFrameskip-v4",
@@ -231,7 +277,7 @@ def create_env(game, seed, video=None): # from previous project
 
     env = gym.make(game_envs.get(game, "BreakoutNoFrameskip-v4"))
     env = AtariWrapper(env) if not video else AtariWrapper(env, video=video)
-    obs, info = env.reset(seed=seed)
+    obs, info = env.reset(seed=seed) if seed is not None else env.reset()
     action_space = env.action_space
     
     return env, action_space, obs, info
@@ -243,13 +289,13 @@ def convert_to_tensor(next_obs, action, reward, truncated, terminated, device):
             torch.tensor([truncated or terminated], device=device) # (1)
             )
 
-def warmup(env, memory:MemoryBuffer, seed, device, log_dir, num_steps=10000): # modified method based on version of code from github
-    log(log_dir, "\tWarming up...", console_log=True)
+def warmup(env, memory:MemoryBuffer, device, log_dir, num_steps=10000): # modified method based on version of code from github
+    log(log_dir, "\tWarming up...", console_log=True, no_log=True)
 
     steps_taken = 0
     st = time.time()
     while steps_taken < num_steps:
-        s, _ = env.reset(seed=seed)
+        s, _ = env.reset()
         s = torch.from_numpy(s).to(device) # (84, 84)
         frame_stack = deque([s] * 4, maxlen=4) # (4, 84, 84)
         s = torch.stack(list(frame_stack), dim=0).unsqueeze(0)  # (1, 4, 84, 84)
@@ -267,7 +313,7 @@ def warmup(env, memory:MemoryBuffer, seed, device, log_dir, num_steps=10000): # 
             if term or trun or steps_taken >= num_steps:
                 break
 
-    log(log_dir, f"\tWarmup completed in: {time.time() - st:.4f}, Collected Observations: {num_steps}", console_log=DEBUGGER.get_mode())
+    log(log_dir, f"\tWarmup completed in: {time.time() - st:.4f}, Collected Observations: {num_steps}", console_log=DEBUGGER.get_mode(), no_log=True)
 
 def extract_and_batch(transitions):
     batch = Transition(*zip(*transitions)) # batch-array of Transitions -> Transition of batch-arrays.
@@ -278,12 +324,12 @@ def extract_and_batch(transitions):
             torch.cat(batch.done).unsqueeze(1), # done_batch (bs, 1)
     )
 
-def sample_memory(memory, args):
-   return extract_and_batch(memory.sample(args.batch_size))
+def sample_memory(memory, batch_size):
+   return extract_and_batch(memory.sample(batch_size))
 
-def train_VQ_VAE(model, memory, optimizer, args, log_dir, theta=5e-4, N=500):
+def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_size=32, theta=5e-4, N=500):
     ast = time.time()
-    log(log_dir, "\tTraining Model...", console_log=True)
+    log(log_dir, "\tTraining Model...", console_log=True, no_log=True)
     recon_loss_list = []
     vq_loss_list = []
 
@@ -292,12 +338,29 @@ def train_VQ_VAE(model, memory, optimizer, args, log_dir, theta=5e-4, N=500):
     for iteration in count():
         st = time.time()
 
-        x, _, _, _, _ = sample_memory(memory, args) # bs, 4, 84, 84
+        x, _, _, _, _ = sample_memory(memory, batch_size)
         x_r, vq_loss = model(x)
 
+        # Estimate code usage
+        z_e = model.encoder(x)
+        _, _, indices = model.quantizer(z_e)
+        flat_indices = indices.view(-1)
+
+        counts = torch.bincount(flat_indices, minlength=model.quantizer.num_embeddings).float()
+        probs = counts / counts.sum()
+
+        # Entropy loss
+        entropy = -torch.sum(probs * torch.log(probs + 1e-8))
+        entropy_bonus = -0.05 * entropy
+
+        # KL divergence to uniform
+        uniform = torch.full_like(probs, 1.0 / model.quantizer.num_embeddings)
+        kl_div = F.kl_div((probs + 1e-8).log(), uniform, reduction='sum')
+        usage_penalty = 0.1 * kl_div
+
         recon_loss = F.mse_loss(x_r, x, reduction='sum')
-        # recon_loss = F.mse_loss(x_r, x, reduction='mean')
-        loss = recon_loss + vq_loss
+        # loss = recon_loss + vq_loss + usage_penalty + entropy_bonus
+        loss = recon_loss + vq_loss + usage_penalty
 
         optimizer.zero_grad()
         loss.backward()
@@ -306,18 +369,22 @@ def train_VQ_VAE(model, memory, optimizer, args, log_dir, theta=5e-4, N=500):
         recon_loss_list.append(recon_loss.item())
         vq_loss_list.append(vq_loss.item())
 
-        log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode())
-        if iteration > args.max_iterations - 1 or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
+        log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Usage Penalty: {usage_penalty:.4f}, Entropy Bonus: {entropy_bonus:.4f}, Duration: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode(), no_log=True)
+        if iteration > max_iterations - 1 or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
             break
 
-    log(log_dir, f"\tModel traininig completed in: {time.time() - ast}", console_log=True)
+    log(log_dir, f"\tModel training completed in: {time.time() - ast}", console_log=True, no_log=True)
     return recon_loss_list, vq_loss_list
 
-def train_model_and_plot(model, memory, optimizer, args, epoch, seed, log_dir):
-    lrec, lvq = train_VQ_VAE(model, memory, optimizer, args, log_dir)
+def train_model_and_plot(model, memory, optimizer, args, epoch, seed, log_dir, usage_log=None):
+    if epoch == 0: # Forces first training to be a bit more substantial
+        lrec, lvq = train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=args.initial_iterations, batch_size=args.batch_size, N=args.initial_iterations)
+    else:
+        lrec, lvq = train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=args.max_iterations, batch_size=args.batch_size)
+
     torch.save(model, os.path.join(os.path.join(log_dir, f"seed_{seed}"), f'model{epoch}.pth')) # save current model
     plot_input_vs_recon(model, memory, args, epoch, log_dir, seed)
-    plot_codebook_usage(model, memory, log_dir, epoch, seed)
+    plot_codebook_usage(model, memory, log_dir, epoch, seed, usage_log=usage_log)
     return lrec, lvq
 
 def validate_transition_probabilities(P, tolerance=1e-6, log_dir=None, console_log=False):
@@ -325,15 +392,15 @@ def validate_transition_probabilities(P, tolerance=1e-6, log_dir=None, console_l
 
     for (s, a), transitions in P.items():
         total_prob = sum(transitions.values())
-        if abs(total_prob - 1) > tolerance and len(transitions.values()):
+        if abs(total_prob - 1) > tolerance:
             invalid_pairs.append(((s, a), total_prob))
 
     if invalid_pairs:
         msg = f"\t\t[WARNING] {len(invalid_pairs)} (s, a) pairs have invalid transition probability sums:"
         if log_dir:
-            log(log_dir, msg, console_log=console_log)
+            log(log_dir, msg, console_log=console_log, no_log=True)
             for (s, a), total in invalid_pairs:
-                log(log_dir, f"\t(s, a) = ({s}, {a}) → total probability = {total:.6f}", console_log=False)
+                log(log_dir, f"\t(s, a) = ({s}, {a}) → total probability = {total:.6f}", console_log=False, no_log=True)
         else:
             print(msg)
             for i, ((s, a), total) in enumerate(invalid_pairs):
@@ -341,7 +408,7 @@ def validate_transition_probabilities(P, tolerance=1e-6, log_dir=None, console_l
     else:
         msg = "\t\t[OK] All transition probability distributions sum to ~1.0"
         if log_dir:
-            log(log_dir, msg, console_log=console_log)
+            log(log_dir, msg, console_log=console_log, no_log=True)
         else:
             print(msg)
 
@@ -356,8 +423,15 @@ def discretize(model, s):
 
     return z_q_indices.flatten().tobytes()
 
-def discretize_multiple(model, obs_batch):
-    return [discretize(model, s.unsqueeze(0)) for s in obs_batch]
+def discretize_multiple(model, s_batch):
+    model.eval()
+    with torch.no_grad():
+        z_e = model.encoder(s_batch)
+        _, _, z_q_indices = model.quantizer(z_e)
+        z_q_indices = z_q_indices.cpu().numpy()
+
+    return [z_q_indices[i].flatten().tobytes() for i in range(z_q_indices.shape[0])]
+
 
 def discretized_extract_and_batch(model, transitions, batch_size=128): # Larger batch increases speed but also memory usage
     model.eval()
@@ -379,17 +453,13 @@ def discretized_extract_and_batch(model, transitions, batch_size=128): # Larger 
 
     return zip(ds_list, a_list, dsp_list, r_list, d_list)
 
-
 def is_known(N_sa_val, M):
     return N_sa_val >= M
-
-def identity(s1, s2):
-    return int(s1 == s2)
 
 # P(s'|s, a) = { N(s, a, s) / N(s, a)    if N(s, a) >= M  |  R(s, a) = { R_sum / N(s, a)     if N(s, a) >= M  |  D(s, a) = { 1 if D_sum / N(s, a) > 0.5 else 0     if N(s, a) >= M
 #              { I[s' = s]}              otherwise        |            { R_max               otherwise        |            { 0                                     otherwise
 # Note: The otherwise part of R and D is provided by the default behaviour of defaultdicts, so can be omitted 
-def update_P_R_D(items, N_sas, R_sum, D_sum, states, P, R, D, M=1):
+def update_P_R_D(items, N_sa, N_sas, R_sum, D_sum, states, actions, s_max, R_max, P, R, D, M=1):
     for (s, a), total in items:
         if is_known(total, M):
             P[(s, a)] = {
@@ -399,17 +469,27 @@ def update_P_R_D(items, N_sas, R_sum, D_sum, states, P, R, D, M=1):
             }
             R[(s, a)] = R_sum[(s, a)] / total
             D[(s, a)] = 1 if D_sum[(s, a)] / total > 0.5 else 0
+
+    # add self loop to unknown (s, a)-pairs
+    for s in states: # observed discritized states
+        for a in actions: # full action space from env
+            if (s, a) not in P.keys() or not is_known(N_sa[(s, a)], M):
+                P[(s, a)] = {s_max: 1.0}                            # Optimistic transition to absorbing state
+                R[(s, a)] = R_max / math.sqrt(N_sa[(s, a)] + 1)     # R_max value
+                D[(s, a)] = 0                                       # Assume non-terminal
+
     return P, R, D
 
-def compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, M=1):
+def compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, actions, s_max, M=1, R_max=1.0):
     P = defaultdict(dict)
-    R = defaultdict(lambda: 1.0)    # R-MAX fallback
-    D = defaultdict(int)            # defaults to 0
-    return update_P_R_D(N_sa.items(), N_sas, R_sum, D_sum, states, P, R, D, M)
+    R = defaultdict(lambda: R_max)    # R-MAX fallback
+    D = defaultdict(int)              # defaults to 0
+    return update_P_R_D(N_sa.items(), N_sa, N_sas, R_sum, D_sum, states, actions, s_max, R_max, P, R, D, M)
 
-def create_mdp(model, actions, transitions, log_dir, M=1):
+def create_mdp(model, actions, transitions, log_dir, M=1, R_max=1.0):
+    global transition_percentage
     st = time.time()
-    log(log_dir, "\tCreating MDP...", console_log=True)
+    log(log_dir, "\tCreating MDP...", console_log=True, no_log=True)
     processed_transitions = discretized_extract_and_batch(model, transitions)
 
     N_sa = Counter()
@@ -423,23 +503,18 @@ def create_mdp(model, actions, transitions, log_dir, M=1):
         N_sa[(s, a)] += 1
         N_sas[(s, a, sp)] += 1
         R_sum[(s, a)] += r
-
         if d:
             D_sum[(s, a)] += 1
-
         states.update([s, sp])
 
-    P, R, D = compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, M)
+    s_max = b"\xff" * model.quantizer.num_embeddings
 
-    # add self loop to unknown (s, a)-pairs
-    for s in states: # observed discritized states
-        for a in actions: # full action space from env
-            if (s, a) not in P.keys():
-                P[(s, a)] = {s: 1.0}
+    P, R, D = compute_P_R_D(N_sa, N_sas, R_sum, D_sum, states, actions, s_max, M, R_max)
 
     if DEBUGGER.get_mode():
         validate_transition_probabilities(P, tolerance=1e-6, log_dir=None, console_log=DEBUGGER.get_mode())
-    log(log_dir, f"\tMDP created in {time.time() - st:.4f}", console_log=True)
+    transition_percentage = f"Percentage of Transitions Known: {compute_known_transition_percentage(N_sa, states, actions, M):.4f}%"
+    log(log_dir, f"\tMDP created in {time.time() - st:.4f}, {transition_percentage}", console_log=True, no_log=True)
 
     return {
         'N_sa': N_sa,           # Count of observed (s, a)-pairs
@@ -449,13 +524,16 @@ def create_mdp(model, actions, transitions, log_dir, M=1):
         'P': P,                 # Estimated P(s'|s, a)
         'R': R,                 # Estimated R(s, a)
         'D': D,                 # Estimation of whether (s, a) -> terminal state
-        'states': states,       # Observed discretized states 
-        'actions': actions      # Iterable containing all possible actions in env
+        'states': states,       # Observed discretized states
+        'actions': actions,     # Iterable containing all possible actions in env
+        's_max': s_max,         # Optimistic absorbing state
+        'R_max': R_max          # R_max used when creating MDP 
     }
 
 def update_mdp(mdp, model, transitions, log_dir, M=1):
+    global transition_percentage
     st = time.time()
-    log(log_dir, "\tUpdating MDP...", console_log=DEBUGGER.get_mode())
+    log(log_dir, "\tUpdating MDP...", console_log=DEBUGGER.get_mode(), no_log=True)
     updated_sa = set()
     processed_transitions = discretized_extract_and_batch(model, transitions)
 
@@ -467,23 +545,26 @@ def update_mdp(mdp, model, transitions, log_dir, M=1):
         if d:
             mdp['D_sum'][(s, a)] += 1
         mdp['states'].update([s, sp])
-
         updated_sa.add((s, a))
 
     items = [((s, a), mdp['N_sa'][(s, a)]) for (s, a) in updated_sa]
-    mdp['P'], mdp['R'], mdp['D'] = update_P_R_D(items, mdp['N_sas'], mdp['R_sum'], mdp['D_sum'], mdp['states'], mdp['P'], mdp['R'], mdp['D'], M)
+    mdp['P'], mdp['R'], mdp['D'] = update_P_R_D(items, mdp['N_sa'], mdp['N_sas'], mdp['R_sum'], mdp['D_sum'], mdp['states'], mdp['actions'], mdp['s_max'], mdp['R_max'], mdp['P'], mdp['R'], mdp['D'], M)
 
     if DEBUGGER.get_mode():
         validate_transition_probabilities(mdp['P'], tolerance=1e-6, log_dir=None, console_log=DEBUGGER.get_mode())
-    log(log_dir, f"\tMDP update completed in: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode())
+    transition_percentage = f"Transition Percentage: {compute_known_transition_percentage(mdp['N_sa'], mdp['states'], mdp['actions'], M):.4f}%"
+    log(log_dir, f"\tMDP update completed in: {time.time() - st:.4f}, {transition_percentage}", console_log=DEBUGGER.get_mode(), no_log=True)
 
-def VI(P, R, states, actions, log_dir, V=defaultdict(float), gamma=0.99, max_iterations=10000, tol=1e-6, max_patience=10):
+def VI(P, R, states, actions, log_dir, V, gamma=0.99, max_iterations=10000, tol=1e-6, max_patience=10, s_max=None, R_max=1.0):
     ast = time.time()
-    log(log_dir, "\tDoing Value Iteration...", console_log=DEBUGGER.get_mode())
+    log(log_dir, "\tDoing Value Iteration...", console_log=True, no_log=True)
     Q = defaultdict(float)
     pi = {}
     patience = 0
     prev_delta = float('inf')
+
+    if s_max is not None:
+        V[s_max] = R_max / (1-gamma) # Value of optimistic absorbing state set to max discounted reward e.g. R_max=1, gamma=0.99 -> V[s_max]=100
 
     for i in range(max_iterations):
         st = time.time()
@@ -501,16 +582,14 @@ def VI(P, R, states, actions, log_dir, V=defaultdict(float), gamma=0.99, max_ite
             V[s] = q_max
             pi[s] = best_a
 
-        log(log_dir, f"\t\tVI - Round: {i}, Delta: {delta}, Target: {tol}, Duration: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode())
+        log(log_dir, f"\t\tVI - Round: {i}, Delta: {delta}, Target: {tol}, Duration: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode(), no_log=True)
         if delta < tol or patience >= max_patience: # convergence check
             break
-
         if (delta == prev_delta):
             patience += 1
-
         prev_delta = delta
 
-    log(log_dir, f"\tVI completed in: {time.time() - ast:.4f}", console_log=DEBUGGER.get_mode())
+    log(log_dir, f"\tVI completed in: {time.time() - ast:.4f}", console_log=True, no_log=True)
     return pi, V
 
 def select_action_eval(model, action_space, pi, s):
@@ -523,7 +602,7 @@ def select_action_eval(model, action_space, pi, s):
 
 def eval_planner(model, pi, args, video, seed, device, epoch, log_dir):
     model.eval()
-    log(log_dir, "\tEvaluating Model...", console_log=True)
+    log(log_dir, "\tEvaluating Model...", console_log=True, no_log=True)
     env, action_space, s, info = create_env(args.env_name, seed=seed, video=video)
     s = torch.from_numpy(s).to(device) # (84, 84)
     frame_stack = deque([s] * 4, maxlen=4) # (4, 84, 84)
@@ -542,7 +621,7 @@ def eval_planner(model, pi, args, video, seed, device, epoch, log_dir):
 
         steps += 1
         lives = info["lives"]
-        log(log_dir, f"\t\tSteps Taken: {steps}, Lives: {lives}, Total Reward: {total_reward}, Duration: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode())
+        log(log_dir, f"\t\tSteps Taken: {steps}, Lives: {lives}, Total Reward: {total_reward}, Duration: {time.time() - st:.4f}", console_log=DEBUGGER.get_mode(), no_log=True)
         if term or trun:
             if info["lives"] == 0:
                 break
@@ -555,28 +634,28 @@ def eval_planner(model, pi, args, video, seed, device, epoch, log_dir):
     video.save(path)
     video.reset()
     env.close()
-    log(log_dir, f"\tEvaluation completed in: {time.time() - st:.4f}, Total Reward: {total_reward}", console_log=DEBUGGER.get_mode())
+    log(log_dir, f"\tEvaluation completed in: {time.time() - st:.4f}, Total Reward: {total_reward}", console_log=True, no_log=True)
     return total_reward
 
-def select_action(model, action_space, pi, s):
+def select_action(model, action_space, pi, s, disable_eps_greedy=False):
     model.eval()
     global eps_threshold
     global steps_done
-    eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps_done / EPS_DECAY)
+
+    if not disable_eps_greedy: # Don't do epsilon calculations if it is disabled
+        eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps_done / EPS_DECAY)
+    
     steps_done += 1
     
-    if random.random() > eps_threshold:
+    if disable_eps_greedy or random.random() > eps_threshold:
         ds = discretize(model, s)
-        if ds in pi:
-            return pi.get(ds)
-        else:
-            return action_space.sample()
+        return pi.get(ds) if ds in pi.keys() else action_space.sample()
     else:
         return action_space.sample() # random eps-greedy action
     
-def collect_transitions(model, env, pi, memory, num_transitions, device, log_dir):
+def collect_transitions(model, game, pi, memory, num_transitions, device, log_dir):
     ast = time.time()
-    log(log_dir, "\tCollecting Transitions...", console_log=True)
+    log(log_dir, "\tCollecting Transitions...", console_log=True, no_log=True)
     model.eval()
     global eps_threshold
     global steps_done
@@ -585,7 +664,7 @@ def collect_transitions(model, env, pi, memory, num_transitions, device, log_dir
     total_reward_list = []
     
     while True:
-        s, info = env.reset() # (84, 84)
+        env, action_space, s, info = create_env(game) # (84, 84)
         s = torch.from_numpy(s).to(device) # (84, 84)
         frame_stack = deque([s] * 4, maxlen=4) # (4, 84, 84)
 
@@ -595,7 +674,8 @@ def collect_transitions(model, env, pi, memory, num_transitions, device, log_dir
 
         while True:
             s = torch.stack(list(frame_stack), dim=0).unsqueeze(0) # (1, 4, 84, 84)
-            a = select_action(model, env.action_space, pi, s)
+            # a = select_action(model, action_space, pi, s, disable_eps_greedy=True) # Disable eps-greedy policy behaviour 
+            a = select_action(model, action_space, pi, s, disable_eps_greedy=False) # Enable eps-greedy policy bahaviour
             sp, r, term, trun, info = env.step(a)
             sp, a, r, d = convert_to_tensor(sp, a, r, trun, term, device)
             frame_stack.append(sp)
@@ -607,7 +687,7 @@ def collect_transitions(model, env, pi, memory, num_transitions, device, log_dir
             lives = info["lives"]
             steps += 1
 
-            log(log_dir, f"\t\t\tSteps Taken: {steps}, Lives: {lives}, Epsilon: {eps_threshold}, Reward: {r.item()}, Elapsed Time: {time.time() - st:.4f}",console_log=DEBUGGER.get_mode())
+            log(log_dir, f"\t\t\tSteps Taken: {steps}, Lives: {lives}, Epsilon: {eps_threshold}, Reward: {r.item()}, Elapsed Time: {time.time() - st:.4f}",console_log=DEBUGGER.get_mode(), no_log=True)
 
             if term or trun:
                 if info["lives"] == 0:
@@ -617,13 +697,118 @@ def collect_transitions(model, env, pi, memory, num_transitions, device, log_dir
                     s = torch.from_numpy(s).to(device)
                     frame_stack = deque([s] * 4, maxlen=4)
 
-        log(log_dir, f"\t\tEpisode completed in: {time.time() - st:.4f}, Steps Taken: {steps}, Epsilon: {eps_threshold}, Total Reward: {total_reward}", console_log=DEBUGGER.get_mode())
+        log(log_dir, f"\t\tEpisode completed in: {time.time() - st:.4f}, Steps Taken: {steps}, Epsilon: {eps_threshold}, Total Reward: {total_reward}", console_log=DEBUGGER.get_mode(), no_log=True)
         
         total_reward_list.append(total_reward)
 
         if len(transitions) >= num_transitions:
             break
 
-    log(log_dir, f"\tTransitions collected in: {time.time() - ast:.4f}", console_log=DEBUGGER.get_mode())
+    log(log_dir, f"\tTransitions collected in: {time.time() - ast:.4f}, Total Steps: {len(transitions)}", console_log=True, no_log=True)
 
-    return transitions, total_reward_list[:num_transitions] # return transitions for MDP update
+    return transitions, total_reward_list
+
+# def select_action_batch(model, action_space, pi, s_batch, disable_eps_greedy=False):
+#     global eps_threshold
+#     global steps_done
+
+#     model.eval()
+#     batch_size = s_batch.shape[0]
+
+#     if not disable_eps_greedy:
+#         eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps_done / EPS_DECAY)
+
+#     steps_done += batch_size
+
+#     # Discretize entire batch
+#     ds_batch = discretize_multiple(model, s_batch)  # list of bytes
+
+#     actions = []
+#     for ds in ds_batch:
+#         if disable_eps_greedy or random.random() > eps_threshold:
+#             actions.append(pi.get(ds, action_space.sample()))
+#         else:
+#             actions.append(action_space.sample())
+
+#     return actions
+
+# def make_env_fn(game):
+#     def _init():
+#         env, _, s, info = create_env(game)
+#         return env
+#     return _init
+
+# def preprocess_obs(obs, device):
+#     obs = torch.from_numpy(obs).squeeze(-1).to(device).float()  # [B, 84, 84]
+#     return obs
+
+# def collect_transitions(model, game, pi, memory, num_transitions, device, log_dir, num_envs=8):
+#     st = time.time()
+#     log(log_dir, "\tCollecting Transitions (Parallel)...", console_log=True, no_log=True)
+
+#     # Create vectorized environments
+#     env_fns = [make_env_fn(game) for _ in range(num_envs)]
+#     envs = AsyncVectorEnv(env_fns)
+#     obs, _ = envs.reset()  # [num_envs, H, W]
+#     obs = preprocess_obs(obs, device)
+
+#     # Initialize frame stacks for each env
+#     frame_stacks = [deque([obs[i]] * 4, maxlen=4) for i in range(num_envs)]
+    
+#     model.eval()
+#     transitions = []
+#     total_reward_list = [0.0] * num_envs
+#     episode_steps = [0] * num_envs
+#     done_flags = [False] * num_envs
+
+#     while len(transitions) < num_transitions:
+#         # Build batch of stacked frames
+#         s_batch = torch.stack([
+#             torch.stack(list(stack), dim=0) for stack in frame_stacks
+#         ]).to(device)  # [num_envs, 4, 84, 84]
+
+#         # Batch action selection
+#         with torch.no_grad():
+#             actions_list = select_action_batch(model, envs.single_action_space, pi, s_batch, disable_eps_greedy=False)
+
+#         # Step all environments
+#         next_obs, rewards, terms, truncs, _ = envs.step(actions_list)
+#         next_obs = preprocess_obs(next_obs, device)
+
+#         for i in range(num_envs):
+#             if done_flags[i]:  # Skip if environment is done
+#                 continue
+            
+#             _, a, r, d = convert_to_tensor(np.array([-1]), actions_list[i], rewards[i], truncs[i], terms[i], device)
+
+#             # a = torch.tensor( device=device).long()
+#             # r = torch.tensor([rewards[i]], device=device).float()
+#             # term = terms[i]
+#             # trun = truncs[i]
+#             # d = torch.tensor([term or trun], device=device).float()
+
+#             # Append new obs to frame stack
+#             frame_stacks[i].append(next_obs[i])
+#             sp = torch.stack(list(frame_stacks[i]), dim=0).unsqueeze(0)  # [1, 4, 84, 84]
+#             s = s_batch[i].unsqueeze(0)
+
+#             # Store in memory
+#             memory.append(s, a, sp, r, d)
+#             transitions.append(Transition(s, a, sp, r, d))
+
+#             total_reward_list[i] += r.item()
+#             episode_steps[i] += 1
+
+#             if d:
+#                 done_flags[i] = True
+#                 log(log_dir, f"\t\tEpisode {i} finished: Steps {episode_steps[i]}, Reward {total_reward_list[i]}", console_log=True, no_log=True)
+#                 total_reward_list[i] = 0.0
+#                 episode_steps[i] = 0
+
+#                 obs, _ = envs.reset()
+#                 obs = preprocess_obs(obs, device)[0]  # single env
+#                 frame_stacks[i] = deque([obs] * 4, maxlen=4)
+#                 done_flags[i] = False
+
+#     log(log_dir, f"\tTransitions collected: {len(transitions)}, Duration: {time.time() - st}", console_log=True, no_log=True)
+#     return transitions, total_reward_list

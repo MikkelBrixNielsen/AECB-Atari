@@ -59,18 +59,16 @@ class VectorQuantizer(nn.Module):
 
         e_loss = F.mse_loss(quantized.detach(), x, reduction='sum') # e_loss = ∥ z_e(x) − sg[e] ∥^2 
         q_loss = F.mse_loss(quantized, x.detach(), reduction='sum') # q_loss = ∥ sg[z_e(x)] − e ∥^2
-        # e_loss = F.mse_loss(quantized.detach(), x, reduction='mean') # e_loss = ∥ z_e(x) − sg[e] ∥^2 
-        # q_loss = F.mse_loss(quantized, x.detach(), reduction='mean') # q_loss = ∥ sg[z_e(x)] − e ∥^2
 
         loss = q_loss + self.commitment_cost * e_loss # q_loss + β * e_loss
         
         quantized = x + (quantized - x).detach() # straight-through estimator
 
         # quantized output z_q(x), quantization loss, indicies of chosen codebook vectors
-        return quantized, loss, indices.view(x.shape[0], x.shape[2], x.shape[3]) # before reshaping
+        return quantized, loss, indices.view(x.shape[0], x.shape[2], x.shape[3])
 
 class VQVAE(nn.Module):
-    def __init__(self, latent_dim=32, num_embeddings=128, commitment_cost=0.25):
+    def __init__(self, latent_dim=16, num_embeddings=128, commitment_cost=0.25):
         super().__init__()
         self.encoder = Encoder(latent_dim=latent_dim)
         self.quantizer = VectorQuantizer(num_embeddings, latent_dim, commitment_cost)
