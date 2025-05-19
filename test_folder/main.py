@@ -1,9 +1,9 @@
 import torch
 import time
 from utils import MemoryBuffer, VideoRecorder, VC
-from utils import create_log_dir, create_argparser, create_eval_env, log
+from utils import create_log_dir, create_argparser, log
 from training import warmup, initial_model_training, additional_model_training, eval_planner, collect_transitions
-from plotting import plot_model_loss, plot_planner_reward, plot_N_sa_histogram, plot_usage_log
+from plotting import plot_model_loss, plot_planner_reward, plot_N_sa_histogram, plot_usage_log, plot_N_sa_heatmap
 from mdp import MDP
 
 # SEEDS = [862559, 454354, 737532, 275105, 523498]
@@ -36,8 +36,16 @@ def main():
             if epoch % ARGS.eval_cycle == 0:
                 eval_reward_list.append(eval_planner(mdp, ARGS, video, seed, DEVICE, epoch, LOG_DIR))
                 plot_N_sa_histogram(mdp.N_sa, LOG_DIR, epoch, seed)
-            transitions = collect_transitions(mdp, ARGS.env_name, memory, ARGS.transitions, DEVICE, LOG_DIR, episode_reward_list)
+                plot_N_sa_heatmap(mdp, epoch, LOG_DIR, seed)
+            transitions = collect_transitions(mdp, ARGS.env_name, memory, ARGS.transitions, DEVICE, LOG_DIR, episode_reward_list, num_envs=6, disable_eps_greedy=True)
             log(LOG_DIR, f"Epoch: {epoch}, Duration: {time.time() - st:.4f}", console_log=True, show_steps=True, show_eps=True, show_codebook_usage=True, show_transition_percentage=True)
+
+            if epoch % ARGS.VQVAE_cycle == 0:
+                additional_model_training(model, optimizer, memory, ARGS, epoch, seed, LOG_DIR, usage_log)
+
+            if epoch % ARGS.MDP_cycle == 0:
+                mdp = MDP(model, DEVICE, LOG_DIR, min_visits=ARGS.min_visits)
+                transitions = memory.get_all()
 
         plot_model_loss(recon_loss_list, vq_loss_list, seed, LOG_DIR)
         plot_planner_reward(episode_reward_list, eval_reward_list, seed, LOG_DIR)

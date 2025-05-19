@@ -143,7 +143,7 @@ def create_vectorized_envs(game, seed=None, num_envs=8):
 
 def compute_known_transition_percentage(N_sa, states, actions, M):
     total_possible = states * actions
-    known = sum([1 for (s, a) in N_sa if N_sa[(s, a)] >= M])
+    known = sum([1 for (s, a), cnt in N_sa.items() if cnt >= M])
     return 100.0 * known / total_possible if total_possible > 0 else 0.0
 
 def extract_and_batch(transitions):

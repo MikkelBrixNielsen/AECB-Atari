@@ -1,6 +1,8 @@
 import torch
 import os
 import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
 from collections import Counter
 from utils import VC, log, sample_memory
@@ -126,4 +128,18 @@ def plot_N_sa_histogram(N_sa, log_dir, epoch, seed):
     path = f"{log_dir}/seed_{seed}/N_sa_Histogram_epoch_{epoch}"
     plt.savefig(path)
     plt.yscale('log')
+    plt.close()
+
+def plot_N_sa_heatmap(mdp, epoch, log_dir, seed):
+    N_sa_matrix = np.zeros((mdp.num_states, mdp.num_actions))
+    for i, ((s,a), count) in enumerate(mdp.N_sa.items()):
+        N_sa_matrix[i, a] = count
+    plt.figure(figsize=(10, 6))
+    sns.heatmap(N_sa_matrix, cmap='viridis', xticklabels=[i for i in range(mdp.num_actions)], yticklabels=False)
+    plt.xlabel("Action")
+    plt.ylabel("Latent Code Index (z)")
+    plt.title(f"N_sa Visit Counts - Epoch {epoch}")
+    plt.tight_layout()
+    path = f"{log_dir}/seed_{seed}/N_sa_heatmap_epoch_{epoch}.png"
+    plt.savefig(path)
     plt.close()

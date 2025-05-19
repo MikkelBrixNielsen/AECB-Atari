@@ -45,7 +45,8 @@ class MDP:
         self.idx2state = list(self.unique_states)
         self.state2idx = {s: i for i, s in enumerate(self.idx2state)}
         self.num_states = len(self.idx2state)
-        self.num_actions = max(max([a for (_, a) in self.dirty]) + 1, self.num_actions)
+        if len(self.dirty) > 0:
+            self.num_actions = max(max([a for (_, a) in self.dirty]) + 1, self.num_actions)
 
         self.P = np.zeros((self.num_states, self.num_actions, self.num_states), dtype=np.float32)
         self.R = np.full((self.num_states, self.num_actions), self.R_max, dtype=np.float32)
@@ -57,10 +58,11 @@ class MDP:
             if total < self.M:
                 self.P[s_idx, a, s_idx] = 1.0
                 self.R[s_idx, a] = self.R_max / (self.gamma * (total / self.M))
-                self.D[s_idx, a] = 1.0 if self.terminal_counts[(s, a)] / max(1, total) > 0.5 else 0.0
+                self.D[s_idx, a] = 1 if self.terminal_counts[(s, a)] / max(1, total) > 0.5 else 0
                 continue
             for sp, count in self.N_sas[(s, a)].items():
                 sp_idx = self.state2idx[sp]
+                print(f"Updating at ({s_idx}, {a}, {sp_idx})")
                 self.P[s_idx, a, sp_idx] = count / total
             self.R[s_idx, a] = self.rewards_sum[(s, a)] / total
             self.D[s_idx, a] = self.terminal_counts[(s, a)] / total
@@ -93,7 +95,10 @@ class MDP:
         s_batch, a_batch, sp_batch, r_batch, d_batch = zip(*transitions)
         z_q = self._encode_and_quantize(torch.stack(s_batch).to(self.device))
         zp_q = self._encode_and_quantize(torch.stack(sp_batch).to(self.device))
-        
+
+        self.unique_codes_used.add(torch.unique(z_q))
+        self.unique_codes_used.add(torch.unique(zp_q))
+
         for z_q, a, zp_q, r, d in zip(z_q, a_batch, zp_q, r_batch, d_batch):
             log(self.log_dir, f"\t\t\tAdding transition: {current + 1} / {goal}...", console_log=VC.debug_mode, no_log=True)
             self._add_transition(z_q, a.item(), zp_q, r.item(), d.item())
@@ -109,16 +114,17 @@ class MDP:
         log(self.log_dir, f"\t\tCompleted adding transitions in {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
 
     def update(self, transitions, mini_batch_size=256):
+        self.unique_codes_used = set()
         ast = time.time()
         log(self.log_dir, "\tUpdating MDP...", console_log=True, no_log=True)
         self._add_transitions(transitions, mini_batch_size)
         self._build()
-        VC.transition_percentage = f"Transitions known: {compute_known_transition_percentage(self.N_sa, self.num_states, self.num_actions, self.M)}"
-        log(self.log_dir, f"\tMDP updated completed in {time.time() - ast:.4f}, VC.transition_percentage", console_log=True, no_log=True)
+        VC.transition_percentage = f"Transitions known: {compute_known_transition_percentage(self.N_sa, self.num_states, self.num_actions, self.M):.4f}%"
+        log(self.log_dir, f"\tMDP updated completed in {time.time() - ast:.4f}, {VC.transition_percentage}, Unique codes used: {len(self.unique_codes_used)}", console_log=True, no_log=True)
 
     def get_action(self, s, action_space): # expects a single frame on form (4, 84, 84) 
         s_idx = self.state2idx.get(self._encode_state(self._encode_and_quantize(s.unsqueeze(0))), None)
-        return self.pi[s_idx] if s_idx and s_idx < len(self.pi) else action_space.sample()
+        return self.pi[s_idx] if s_idx is not None and s_idx < len(self.pi) else action_space.sample()
 
     def _check_VV_size(self):
         if self.V is None:
@@ -128,7 +134,11 @@ class MDP:
             self.V = np.zeros(self.num_states, dtype=np.float32)
             self.V[:V_old.shape[0]] = V_old
 
-    def solve(self, tol=1e-6, max_iterations=10000): # Currently does value iteration 
+    def solve(self, tol=1e-6, max_iterations=10000): # Currently does value iteration
+        if self.P is None or self.P.shape[0] == 0:
+            log(self.log_dir, "\tSkipping value iteration: no transitions known.", console_log=True)
+            return
+
         ast = time.time()
         log(self.log_dir, "\tDoing value iteration...", console_log=True, no_log=True)
         self._check_VV_size()

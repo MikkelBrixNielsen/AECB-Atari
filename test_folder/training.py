@@ -217,7 +217,7 @@ def collect_transitions(mdp, game, memory, num_transitions, device, log_dir, epi
             frame_stacks[i].append(next_obs[i])
             single_ssp = torch.stack(list(frame_stacks[i]), dim=0) # (4, 84, 84)
             single_ss = stacked_obs[i] # (4, 84, 84)
-            memory.append(single_ss, actions[i], single_ssp, rewards[i], dones[i]) 
+            memory.append(single_ss, actions[i], single_ssp, rewards[i], dones[i])
             transitions.append((single_ss, actions[i], single_ssp, rewards[i], dones[i])) # store transitions for MDP update
             stacked_obs[i] = single_ssp # num_envs x (84, 84)
 
