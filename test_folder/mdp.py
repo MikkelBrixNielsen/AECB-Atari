@@ -120,11 +120,18 @@ class MDP:
         s_idx = self.state2idx.get(self._encode_state(self._encode_and_quantize(s.unsqueeze(0))), None)
         return self.pi[s_idx] if s_idx and s_idx < len(self.pi) else action_space.sample()
 
+    def _check_VV_size(self):
+        if self.V is None:
+            self.V = np.zeros(self.num_states, dtype=np.float32)
+        elif self.V.shape[0] < self.num_states:
+            V_old = self.V
+            self.V = np.zeros(self.num_states, dtype=np.float32)
+            self.V[:V_old.shape[0]] = V_old
+
     def solve(self, tol=1e-6, max_iterations=10000): # Currently does value iteration 
         ast = time.time()
         log(self.log_dir, "\tDoing value iteration...", console_log=True, no_log=True)
-        if self.V is None:
-            self.V = np.zeros(self.num_states, dtype=np.float32)
+        self._check_VV_size()
 
         for i in range(max_iterations):
             st = time.time()
