@@ -96,6 +96,7 @@ class MDP:
         transitions = list(zip(z_q, a_batch, zp_q, r_batch, d_batch))
 
         for z_q, a, zp_q, r, d in transitions:
+            ending = '\n' if current == 0 else '\r'
             log(self.log_dir, f"\t\t\tAdding transition: {current + 1} / {goal}...", console_log=VC.debug_mode, no_log=True)
             self._add_transition(z_q, a.item(), zp_q, r.item(), d.item())
             current += 1
