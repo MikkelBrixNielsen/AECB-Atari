@@ -69,9 +69,14 @@ class MemoryBuffer:
     def sample(self, batch_size):
         return random.sample(self.memory, batch_size)
 
-    def sample_recent(self, batch_size, num_most_recent=10000):
-        num = min(len(self.memory), num_most_recent)
-        return random.sample(self.memory[-num:], batch_size)
+    def sample_recent(self, batch_size, mrp=0.8):
+        num = min(len(self.memory), batch_size)
+        offset = self.ptr - num*mrp
+        recent_sample = self.memory[max(0, offset) : self.ptr]
+        if offset < 0:
+            recent_sample += self.memory[self.length + offset:]
+        random_sample = random.sample(self.memory[self.ptr % self.length : self.length + min(0, offset)], num - num*mrp)
+        return random_sample + recent_sample 
 
     def get_all(self):
         return self.memory
