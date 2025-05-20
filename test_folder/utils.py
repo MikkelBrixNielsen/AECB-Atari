@@ -118,7 +118,7 @@ def log(log_dir, message, console_log=False, show_steps=False, show_eps=False, s
     if show_steps:
         message = message + f", Steps done w/o warmup: {VC.steps_done}"
     if show_eps:
-        message = message + f", Epsilon: {VC.eps_threshold:.4f}"
+        message = message + f", Epsilon: {100*VC.eps_threshold:.2f}"
     if show_codebook_usage:
         message = message + f", {VC.codebook_usage}"
     if show_transition_percentage:

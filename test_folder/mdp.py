@@ -118,15 +118,15 @@ class MDP:
         log(self.log_dir, "\tUpdating MDP...", console_log=True, no_log=True)
         self._add_transitions(transitions, mini_batch_size)
         self._build()
-        VC.transition_percentage = f"Transitions known: {compute_known_transition_percentage(self.N_sa, self.num_states, self.num_actions, self.M):.4f}%"
+        VC.transition_percentage = f"Transitions known: {compute_known_transition_percentage(self.N_sa, self.num_states, self.num_actions, self.M):.2f}%"
         s_states = len(set(s for (s, _) in self.N_sa))
         sp_states = len(set(sp for counter in self.N_sas.values() for sp in counter))
-        log(self.log_dir, f"""\tMDP updated completed in {time.time() - ast:.4f}, 
-            Unique codes used: {len(self.unique_codes_used)}, 
-            {VC.transition_percentage}, 
-            #(s, a)-pairs: {len(self.N_sa)}, 
-            # #states: {self.num_states} - ({s_states, sp_states}), 
-            # #actions: {self.num_actions}""", 
+        log(self.log_dir, f"\tMDP updated completed in {time.time() - ast:.4f}, " + 
+            f"Unique codes used: {len(self.unique_codes_used)}, " +
+            f"{VC.transition_percentage}, " +
+            f"#(s, a)-pairs: {len(self.N_sa)}, " +
+            f"#states: {self.num_states} - ({s_states, sp_states}), " +
+            f"#actions: {self.num_actions}", 
             console_log=True, no_log=True)
 
     def get_action(self, s, action_space): # expects a single frame on form (4, 84, 84) 
