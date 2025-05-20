@@ -119,7 +119,15 @@ class MDP:
         self._add_transitions(transitions, mini_batch_size)
         self._build()
         VC.transition_percentage = f"Transitions known: {compute_known_transition_percentage(self.N_sa, self.num_states, self.num_actions, self.M):.4f}%"
-        log(self.log_dir, f"\tMDP updated completed in {time.time() - ast:.4f}, {VC.transition_percentage}, Unique codes used: {len(self.unique_codes_used)}", console_log=True, no_log=True)
+        s_states = len(set(s for (s, _) in self.N_sa))
+        sp_states = len(set(sp for counter in self.N_sas.values() for sp in counter))
+        log(self.log_dir, f"""\tMDP updated completed in {time.time() - ast:.4f}, 
+            Unique codes used: {len(self.unique_codes_used)}, 
+            {VC.transition_percentage}, 
+            #(s, a)-pairs: {len(self.N_sa)}, 
+            # #states: {self.num_states} - ({s_states, sp_states}), 
+            # #actions: {self.num_actions}""", 
+            console_log=True, no_log=True)
 
     def get_action(self, s, action_space): # expects a single frame on form (4, 84, 84) 
         s_idx = self.state2idx.get(self._encode_state(self._encode_and_quantize(s.unsqueeze(0))), None)

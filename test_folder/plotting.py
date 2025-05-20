@@ -132,7 +132,11 @@ def plot_N_sa_histogram(N_sa, log_dir, epoch, seed):
 
 def plot_N_sa_heatmap(mdp, epoch, log_dir, seed):
     N_sa_matrix = np.zeros((mdp.num_states, mdp.num_actions))
-    for i, ((s,a), count) in enumerate(mdp.N_sa.items()):
+    for (s, a), count in mdp.N_sa.items():
+        if s not in mdp.state2idx:
+            log("[WARNING], (s, a)-pair not in mdp.state2idx")
+            continue
+        i = mdp.state2idx[s]
         N_sa_matrix[i, a] = count
     plt.figure(figsize=(10, 6))
     sns.heatmap(N_sa_matrix, cmap='viridis', xticklabels=[i for i in range(mdp.num_actions)], yticklabels=False)
