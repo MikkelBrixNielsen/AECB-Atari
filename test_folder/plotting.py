@@ -1,7 +1,7 @@
 import torch
 import os
 import matplotlib.pyplot as plt
-import seaborn as sns
+import seaborn as sns # type:ignore
 import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
 from collections import Counter
@@ -121,7 +121,7 @@ def plot_usage_log(usage_log, log_dir, seed):
 def plot_N_sa_histogram(N_sa, log_dir, epoch, seed):
     counts = list(N_sa.values())
     plt.figure(figsize=(10, 5))
-    plt.hist(counts, bins=30, log=True)
+    plt.bar(list(range(len(counts))), counts)
     plt.xlabel("Visit Count per (s, a)")
     plt.ylabel("Frequency")
     plt.title("Histogram of N_sa Visit Counts")

@@ -57,12 +57,11 @@ class MDP:
             total = self.N_sa[(s, a)]
             if total < self.M:
                 self.P[s_idx, a, s_idx] = 1.0
-                self.R[s_idx, a] = self.R_max / (self.gamma * (total / self.M))
+                self.R[s_idx, a] = self.R_max
                 self.D[s_idx, a] = 1 if self.terminal_counts[(s, a)] / max(1, total) > 0.5 else 0
                 continue
             for sp, count in self.N_sas[(s, a)].items():
                 sp_idx = self.state2idx[sp]
-                print(f"Updating at ({s_idx}, {a}, {sp_idx})")
                 self.P[s_idx, a, sp_idx] = count / total
             self.R[s_idx, a] = self.rewards_sum[(s, a)] / total
             self.D[s_idx, a] = self.terminal_counts[(s, a)] / total

@@ -54,23 +54,30 @@ Transition = namedtuple('Transition',
 class MemoryBuffer:
     def __init__(self, size):
         self.size = size
-        self.memory = deque(maxlen=size)
+        self.memory = []
+        self.length = 0
+        self.ptr = 0
 
-    def append(self, *args):
-        self.memory.append(Transition(*args))
+    def append(self, *args): # FIXME: Not safe if append happens more than max number python wants to represent
+        if self.ptr < self.size:
+            self.memory.append(Transition(*args))
+            self.length += 1
+        else:
+            self.memory[self.ptr % self.size] = Transition(*args)
+        self.ptr += 1
 
     def sample(self, batch_size):
-        return random.sample(list(self.memory), batch_size)
+        return random.sample(self.memory, batch_size)
 
     def sample_recent(self, batch_size, num_most_recent=10000):
         num = min(len(self.memory), num_most_recent)
-        return random.sample(list(self.memory)[-num:], batch_size)
+        return random.sample(self.memory[-num:], batch_size)
 
     def get_all(self):
-        return list(self.memory)
+        return self.memory
 
     def __len__(self):
-        return len(self.memory)
+        return self.length
 
 def create_argparser(): # modified from previous project
     parser = argparse.ArgumentParser()

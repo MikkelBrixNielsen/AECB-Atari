@@ -37,7 +37,7 @@ def main():
                 eval_reward_list.append(eval_planner(mdp, ARGS, video, seed, DEVICE, epoch, LOG_DIR))
                 plot_N_sa_histogram(mdp.N_sa, LOG_DIR, epoch, seed)
                 plot_N_sa_heatmap(mdp, epoch, LOG_DIR, seed)
-            transitions = collect_transitions(mdp, ARGS.env_name, memory, ARGS.transitions, DEVICE, LOG_DIR, episode_reward_list, num_envs=6, disable_eps_greedy=True)
+            transitions = collect_transitions(mdp, ARGS.env_name, memory, ARGS.transitions, DEVICE, LOG_DIR, episode_reward_list, num_envs=6, disable_eps_greedy=False)
             log(LOG_DIR, f"Epoch: {epoch}, Duration: {time.time() - st:.4f}", console_log=True, show_steps=True, show_eps=True, show_codebook_usage=True, show_transition_percentage=True)
 
             if epoch % ARGS.VQVAE_cycle == 0:
@@ -53,19 +53,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-    # TODO: Increase transition collections speed?????
-
-    # TODO: Increase VI and MDP speed
-
-    # TODO: Drastically reduce min_visits 100 -> 5                          (CURRENTLY TRYING THIS)
-
-    # TODO: Collect more frames before updating the mdp try collecting 5k   (CURRENTLY TRYING THIS)
-
-    # TODO: Lower latent_dim 16 or 8 for better generalization but less expressiveness
-    
-    # TODO: Lower commitment loss 0.25 -> 0.1 or 0.05 encourage exploration
-    
 
     # NOTE: python main.py --warmup 10000 --eval-cycle 10 --VQVAE-cycle 50 --MDP-cycle 50 --min-visit 5 --epoch 2500 --debug --transitions 5000 --max-iterations 5000
     # NOTE: python main.py --warmup 10000 --eval-cycle 5 --VQVAE-cycle 10 --MDP-cycle 10 --min-visit 5 --epoch 2500 --debug --transitions 5000 --max-iterations 3000

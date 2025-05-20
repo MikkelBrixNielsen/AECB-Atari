@@ -77,10 +77,10 @@ def warmup(game, memory, device, log_dir, num_steps=10000, num_envs=6):
 
 def estimate_codebook_usage_probs(model, x):
     z_e = model.encoder(x)
-    _, _, indices = model.quantizer(z_e)
+    z_q, vq_loss, indices = model.quantizer(z_e)
     flat_indices = indices.view(-1)
     counts = torch.bincount(flat_indices, minlength=model.quantizer.num_embeddings).float()
-    return counts / counts.sum()
+    return z_q, vq_loss, counts / counts.sum()
 
 def entropy_bonus(probs, scale=0.05):
     return -scale * (-torch.sum(probs * torch.log(probs + 1e-8)))
@@ -99,13 +99,13 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
         st = time.time()
 
         x, _, _, _, _ = sample_memory(memory, batch_size)
-        x_r, vq_loss = model(x)
-        # probs = estimate_codebook_usage_probs(model, x)
-        # eb = entropy_bonus(probs)
-        # up = usage_penalty(model, probs)
+        z_q, vq_loss, probs = estimate_codebook_usage_probs(model, x)
+        x_r = model.decoder(z_q)
+        eb = entropy_bonus(probs)
+        up = usage_penalty(model, probs)
 
         recon_loss = F.mse_loss(x_r, x, reduction='sum')
-        loss = recon_loss + vq_loss # + up + eb
+        loss = recon_loss + vq_loss + up + eb
 
         optimizer.zero_grad()
         loss.backward()
@@ -113,12 +113,12 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
 
         recon_loss_list.append(recon_loss.item())
         vq_loss_list.append(vq_loss.item())
-        # entropy_bonus_list.append(eb)
-        # usage_penalty_list.append(up)
+        entropy_bonus_list.append(eb)
+        usage_penalty_list.append(up)
 
-        # log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Usage Penalty: {up:.4f}, Entropy Bonus: {eb:.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
-        log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
-        if iteration > max_iterations - 1 or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
+        log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Usage Penalty: {up:.4f}, Entropy Bonus: {eb:.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
+        # log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
+        if iteration >= (max_iterations * len(memory) / batch_size)  or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
             break
 
     log(log_dir, f"\tModel training completed in: {time.time() - ast}", console_log=True, no_log=True)
