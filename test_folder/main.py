@@ -56,6 +56,7 @@ if __name__ == "__main__":
 
 # TODO: Do pooling in encoder / adapt decoder to deal with this 
 # TODO: Evaluate over multiple seeds
+# TODO: Plot evaluation as a funciton of VC.GD_steps_done (i.e. gradient steps done)
 
 # env_name='breakout', lr=0.0002, epoch=2500, batch_size=32, eval_cycle=10, transitions=2500, VQVAE_cycle=1000, MDP_cycle=1000, max_iterations=3, initial_iterations=5, warmup=10000, min_visits=25, debug=False)
 # - try min_visits = 15 / 10 / 5 (25 explored very slowly)
