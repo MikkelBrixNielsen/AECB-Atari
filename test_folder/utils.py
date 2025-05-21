@@ -12,6 +12,7 @@ class ValueContainer():
         self.debug_mode = False
         self.eps_threshold = 1
         self.steps_done = 0
+        self.GD_steps_done = 0
         self.codebook_usage = "Not defined"
         self.transition_percentage = "Not defined"
         self.write_mode = "w"
@@ -90,9 +91,10 @@ def create_argparser(): # modified from previous project
     parser.add_argument('--lr', default=2e-4, type=float, help="learning rate")
     parser.add_argument('--epoch', default=10001, type=int, help="number of training epoch")
     parser.add_argument('--batch-size', default=32, type=int, help="batch size")
-    parser.add_argument('--eval-cycle', default=10, type=int, help="epoch before retraining VQVAE")
-    parser.add_argument('--transitions', default=2500, type=int, help="number of transitions to do before mdp rebuild")
-    parser.add_argument('--VQVAE-cycle', default=1000, type=int, help="number of epochs before model is retrained")
+    parser.add_argument('--eval-cycle', default=10, type=int, help="epochs before evaluating planner")
+    parser.add_argument('--transitions', default=2500, type=int, help="number of transitions to collect in an epoch")
+    parser.add_argument('--episodes', default=2500, type=int, help="number of episodes to do in an epoch")
+    parser.add_argument('--VQVAE-cycle', default=1000, type=int, help="number of epochs before gets additional training")
     parser.add_argument('--MDP-cycle', default=1000, type=int, help="number of epochs before mdp is recreated")
     parser.add_argument('--max-iterations', default=25000, type=int, help="max iterations VQVAE runs per training cycle")
     parser.add_argument('--initial-iterations', default=10000, type=int, help="number of iterations VQVAE does in epoch 0")
@@ -118,7 +120,7 @@ def log(log_dir, message, console_log=False, show_steps=False, show_eps=False, s
     if show_steps:
         message = message + f", Steps done w/o warmup: {VC.steps_done}"
     if show_eps:
-        message = message + f", Epsilon: {100*VC.eps_threshold:.2f}"
+        message = message + f", Epsilon: {100*VC.eps_threshold:.2f}%"
     if show_codebook_usage:
         message = message + f", {VC.codebook_usage}"
     if show_transition_percentage:

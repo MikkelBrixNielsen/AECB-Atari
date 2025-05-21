@@ -37,15 +37,15 @@ def main():
                 eval_reward_list.append(eval_planner(mdp, ARGS, video, seed, DEVICE, epoch, LOG_DIR))
                 plot_N_sa_histogram(mdp.N_sa, LOG_DIR, epoch, seed)
                 plot_N_sa_heatmap(mdp, epoch, LOG_DIR, seed)
-            transitions = collect_transitions(mdp, ARGS.env_name, memory, ARGS.transitions, DEVICE, LOG_DIR, episode_reward_list, num_envs=6, disable_eps_greedy=False)
+            transitions = collect_transitions(mdp, ARGS.env_name, memory, ARGS, DEVICE, LOG_DIR, episode_reward_list, num_envs=6, disable_eps_greedy=False)
             log(LOG_DIR, f"Epoch: {epoch}, Duration: {time.time() - st:.4f}", console_log=True, show_steps=True, show_eps=True, show_codebook_usage=True, show_transition_percentage=True)
 
             if epoch % ARGS.VQVAE_cycle == 0:
                 additional_model_training(model, optimizer, memory, ARGS, epoch, seed, LOG_DIR, usage_log)
 
-            if epoch % ARGS.MDP_cycle == 0:
-                mdp = MDP(model, DEVICE, LOG_DIR, min_visits=ARGS.min_visits)
-                transitions = memory.get_all()
+            # if epoch % ARGS.MDP_cycle == 0:
+            #     mdp = MDP(model, DEVICE, LOG_DIR, min_visits=ARGS.min_visits)
+            #     transitions = memory.get_all()
 
         plot_model_loss(recon_loss_list, vq_loss_list, seed, LOG_DIR)
         plot_planner_reward(episode_reward_list, eval_reward_list, seed, LOG_DIR)
@@ -54,8 +54,8 @@ def main():
 if __name__ == "__main__":
     main()
 
-    # NOTE: python main.py --warmup 10000 --eval-cycle 10 --VQVAE-cycle 50 --MDP-cycle 50 --min-visit 5 --epoch 2500 --debug --transitions 5000 --max-iterations 5000
-    # NOTE: python main.py --warmup 10000 --eval-cycle 5 --VQVAE-cycle 10 --MDP-cycle 10 --min-visit 5 --epoch 2500 --debug --transitions 5000 --max-iterations 3000
-    # NOTE: python main.py --warmup 10000 --eval-cycle 5 --VQVAE-cycle 10 --MDP-cycle 30 --min-visit 3 --epoch 2500 --debug --transitions 5000 --max-iterations 3000
+# TODO: Do evaluation over multiple seeds
 
-    # NOTE: Try this next python main.py --warmup 20000 --transitions 10000 --epoch 2500 --VQVAE-cycle 10 --MDP-cycle 20 --eval-cycle 10 --min-visits 3 --max-iterations 3000 --initial-iterations 10000 --batch-size 32 --lr 2e-4 --debug
+# env_name='breakout', lr=0.0002, epoch=2500, batch_size=32, eval_cycle=10, transitions=2500, VQVAE_cycle=1000, MDP_cycle=1000, max_iterations=3, initial_iterations=5, warmup=10000, min_visits=25, debug=False)
+# - try min_visits = 15 / 10 / 5 (25 explored very slowly)
+# - try VQVAE og MDP cycle = 100 ?

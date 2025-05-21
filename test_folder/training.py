@@ -13,7 +13,7 @@ from plotting import plot_codebook_usage, plot_input_vs_recon
 from utils import VC, create_vectorized_envs, log, sample_memory, create_eval_env
 from model import VQVAE
 
-EPS_START, EPS_END, EPS_DECAY = 1, 0.05, 100000
+EPS_START, EPS_END, EPS_DECAY = 1, 0.05, 150000
 
 def preprocess_frames(observations, device, crop_size=(34, 194, 0, 160), target_size=(84, 84), normalize=True):
     def process(obs):
@@ -116,6 +116,7 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
         entropy_bonus_list.append(eb)
         usage_penalty_list.append(up)
 
+        VC.GD_steps_done += 1
         log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Usage Penalty: {up:.4f}, Entropy Bonus: {eb:.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
         # log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
         if iteration >= (max_iterations * len(memory) / batch_size)  or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
@@ -194,7 +195,7 @@ def select_action(mdp, action_space, obs, num_envs, disable_eps_greedy=False):
     else:
         return np.stack(action_space.sample()) # random eps-greedy action
 
-def collect_transitions(mdp, game, memory, num_transitions, device, log_dir, episode_reward_list=None, num_envs=6, disable_eps_greedy=True):
+def collect_transitions(mdp, game, memory, args, device, log_dir, episode_reward_list=None, num_envs=6, disable_eps_greedy=True):
     log(log_dir, "\tCollecting Transitions...", console_log=True, no_log=True)
     envs, action_space, _, _ = create_vectorized_envs(game, num_envs=num_envs) # (num_envs, H, W, 3)
 
@@ -206,8 +207,8 @@ def collect_transitions(mdp, game, memory, num_transitions, device, log_dir, epi
     frame_stacks = [deque([obs[i]]*4, maxlen=4) for i in range(num_envs)] # (num_envs, 4, 84, 84)
     stacked_obs = torch.stack([torch.stack(list(fs), dim=0) for fs in frame_stacks]) # (num_envs, 4, 84, 84)
 
-    steps, total_avg_reward = 0, 0
-    while steps < num_transitions:
+    steps, total_avg_reward, completed_episodes = 0, 0, 0
+    while completed_episodes < args.episodes: # steps < args.transitions
         actions = select_action(mdp, action_space, stacked_obs, num_envs, disable_eps_greedy=disable_eps_greedy) # (num_evns, )
         next_obs, rewards, terms, truncs, infos = envs.step(actions)
         next_obs = preprocess_frames(next_obs, device) # (num_envs, 84, 84)
@@ -222,6 +223,7 @@ def collect_transitions(mdp, game, memory, num_transitions, device, log_dir, epi
             stacked_obs[i] = single_ssp # num_envs x (84, 84)
 
             if dones[i].item():
+                completed_episodes += 1
                 stacked_obs[i] = reset_or_fire(envs, i, infos, device, frame_stacks)
 
         total_avg_reward += sum(r.item() for r in rewards)

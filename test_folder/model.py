@@ -3,8 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class Encoder(nn.Module):
-    def __init__(self, in_channels=4, hidden_channels=64, latent_dim=16):
+    def __init__(self, in_channels=4, hidden_channels=64, latent_dim=16, pool_kernel=2):
         super().__init__()
+        self.pool_kernel = pool_kernel
         self.net = nn.Sequential(                                                 # input: (bs, in_channels, 84, 84)
             nn.Conv2d(in_channels, hidden_channels, kernel_size=4, stride=2, padding=1), # (bs, hidden_channels, 42, 42)
             nn.ReLU(),
@@ -16,7 +17,10 @@ class Encoder(nn.Module):
         )
         
     def forward(self, x):
-        return self.net(x)  # shape: (bs, latent_dim, 7, 7)
+        x = self.net(x)
+        if self.pool_kernel > 1:
+            x = F.avg_pool2d(x, kernel_size=self.pool_kernel)
+        return x
 
 class Decoder(nn.Module):
     def __init__(self, latent_dim=16, hidden_channels=64, out_channels=4):
@@ -68,7 +72,7 @@ class VectorQuantizer(nn.Module):
         return quantized, loss, indices.view(x.shape[0], x.shape[2], x.shape[3])
 
 class VQVAE(nn.Module):
-    def __init__(self, channels=4, latent_dim=8, num_embeddings=16, hidden_channels=64, commitment_cost=0.4):
+    def __init__(self, channels=4, latent_dim=16, num_embeddings=32, hidden_channels=64, commitment_cost=0.4):
         super().__init__()
         self.encoder = Encoder(channels, hidden_channels, latent_dim)
         self.quantizer = VectorQuantizer(num_embeddings, latent_dim, commitment_cost)
