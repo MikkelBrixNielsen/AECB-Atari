@@ -3,9 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class Encoder(nn.Module):
-    def __init__(self, in_channels=4, hidden_channels=64, latent_dim=16, pool_kernel=2):
+    def __init__(self, in_channels=4, hidden_channels=64, latent_dim=16):
         super().__init__()
-        self.pool_kernel = pool_kernel
         self.net = nn.Sequential(                                                 # input: (bs, in_channels, 84, 84)
             nn.Conv2d(in_channels, hidden_channels, kernel_size=4, stride=2, padding=1), # (bs, hidden_channels, 42, 42)
             nn.ReLU(),
@@ -17,10 +16,7 @@ class Encoder(nn.Module):
         )
         
     def forward(self, x):
-        x = self.net(x)
-        if self.pool_kernel > 1:
-            x = F.avg_pool2d(x, kernel_size=self.pool_kernel)
-        return x
+        return self.net(x)
 
 class Decoder(nn.Module):
     def __init__(self, latent_dim=16, hidden_channels=64, out_channels=4):
