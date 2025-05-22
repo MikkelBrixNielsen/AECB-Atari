@@ -34,10 +34,13 @@ def main():
             plot_N_sa_heatmap(mdp, epoch, LOG_DIR)
         transitions = collect_transitions(mdp, ARGS.env_name, memory, ARGS, DEVICE, LOG_DIR, episode_reward_list, num_envs=ARGS.num_envs, disable_eps_greedy=False)
 
-        if epoch % ARGS.VQVAE_cycle == 0:
+        if epoch % ARGS.VQVAE_cycle == 0: # TODO: TRY AND NOT DO ANY OF THIS WHEN EPOCH > 100
             loss = additional_model_training(model, optimizer, memory, ARGS, epoch, LOG_DIR, usage_log, newest_half=True)
             append_loss([recon_loss_list, vq_loss_list, entropy_bonus_list, usage_penalty_list], loss)
-        
+            mdp = MDP(model, DEVICE, LOG_DIR, min_visits=ARGS.min_visits)
+            mdp.update(memory.get_all())
+
+
         log(LOG_DIR, f"Epoch: {epoch}, Duration: {time.time() - st:.4f}", console_log=True, show_steps=True, show_eps=True, show_codebook_usage=True, show_transition_percentage=True, show_training_data=True)
 
     plot_model_loss(recon_loss_list, vq_loss_list, usage_penalty_list, entropy_bonus_list, LOG_DIR)
