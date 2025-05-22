@@ -7,8 +7,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from collections import Counter
 from utils import VC, log, sample_memory
 
-
-def plot_input_vs_recon(model, memory, args, epoch, log_dir, seed=0000):
+def plot_input_vs_recon(model, memory, args, epoch, log_dir):
     recon = None
     with torch.no_grad():
         state_batch, _, next_state_batch, _, _ = sample_memory(memory, args.batch_size)
@@ -18,7 +17,7 @@ def plot_input_vs_recon(model, memory, args, epoch, log_dir, seed=0000):
     batch = batch[:8]  # first 8 samples
     recon = recon[:8]
 
-    fig, axs = plt.subplots(8, 8, figsize=(12, 12))  # 8 images × 4 channels × 2 (input+recon)
+    _, axs = plt.subplots(8, 8, figsize=(12, 12))  # 8 images × 4 channels × 2 (input+recon)
     for i in range(8):  # for each image
         for j in range(4):  # for each frame
             axs[i, j].imshow(batch[i, j].cpu(), cmap='gray')
@@ -29,7 +28,7 @@ def plot_input_vs_recon(model, memory, args, epoch, log_dir, seed=0000):
             axs[i, j+4].set_title(f'Out {j}')
             axs[i, j+4].axis('off')
 
-    path = os.path.join(f'{log_dir}/seed_{seed}', 'log_reconstruction_images')
+    path = os.path.join(f'{log_dir}', 'log_reconstruction_images')
     if not os.path.exists(path):
         os.makedirs(path)
 
@@ -37,35 +36,36 @@ def plot_input_vs_recon(model, memory, args, epoch, log_dir, seed=0000):
     plt.savefig(f"{path}/epoch_{epoch}")
     plt.close()
 
-def plot_multiple_series(data_lists, log_dir, seed=0, labels=None, title='Plot', xlabel='X', ylabel='Y', steps=None, figsize=(8, 6)):
+def plot_multiple_series(data_lists, log_dir, labels=None, title='Plot', xlabel='X', ylabel='Y', steps=None, figsize=(8, 6), log_scale=False):
     plt.figure(figsize=figsize)
     
     for i, data in enumerate(data_lists):
-        # x = list(range(len(data)))
         label = labels[i] if labels and i < len(labels) else f'Series {i + 1}'
         step = steps[i] if steps and i < len(steps) else 1
         x = [n*step for n in range(len(data))]
         plt.plot(x, data, label=label, alpha=0.6)
     
     plt.title(title)
-    plt.yscale('log')
+    if log_scale:
+        plt.yscale('log')
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.legend()
     plt.grid(True)
-    plt.savefig(f"{log_dir}/seed_{seed}/{title}")
+    plt.savefig(f"{log_dir}/{title}")
     plt.close()
 
-def plot_model_loss(recon_loss_list, vq_loss_list, seed, log_dir):
+def plot_model_loss(recon_loss_list, vq_loss_list, usage_penalty_list, entropy_bonus_list, log_dir):
     total_loss = [sum(t) for t in zip(recon_loss_list, vq_loss_list)]
-    data = [recon_loss_list, vq_loss_list, total_loss]
-    titles = ["Recon Loss", "VQ Loss", "Total Loss"]
-    plot_name = "VQ-VAE Loss Curves"
-    plot_multiple_series(data, log_dir, seed, titles, plot_name, "Epochs", "Loss")
+    plot_multiple_series([recon_loss_list, vq_loss_list, total_loss], log_dir, ["Recon Loss", "VQ Loss", "Total Loss"], "VQ-VAE Loss Curves", "Training Steps", "Loss", log_scale=True)
+    plot_multiple_series([usage_penalty_list], log_dir, title="Usage Penalty", xlabel="Training Steps", ylabel="Value")
+    plot_multiple_series([entropy_bonus_list], log_dir, title="Entropy Bonus", xlabel="Training Steps", ylabel="Value")
 
-def plot_planner_reward(episode_reward_list, eval_reward_list, seed, log_dir):
-    plot_multiple_series([episode_reward_list], log_dir, seed, "Episodic Reward", "Planner Episodic Reward", "Episode", "Reward")
-    plot_multiple_series([eval_reward_list], log_dir, seed, "Evaluation Reward", "Planner Evaluation Reward", "Epochs", "Reward")
+def plot_planner_reward(eval_reward_lists, log_dir, labels):
+    plot_multiple_series(eval_reward_lists, log_dir, labels, title="Planner Evaluation Reward", xlabel="Epochs", ylabel="Reward")
+
+def plot_episodic_reward(episode_reward_list, log_dir):
+    plot_multiple_series([episode_reward_list], log_dir, title="Planner Episodic Reward", xlabel="Epochs", ylabel="Reward")
 
 def compute_codebook_usage(model, dataset, batch_size=128):
     model.eval()
@@ -82,7 +82,7 @@ def compute_codebook_usage(model, dataset, batch_size=128):
 
     return usage_counter
 
-def plot_codebook_usage(model, memory, log_dir, epoch, seed, batch_size=5000, usage_log=None):
+def plot_codebook_usage(model, memory, log_dir, epoch, batch_size=5000, usage_log=None):
     num_codes = model.quantizer.num_embeddings
     dataset = []
 
@@ -107,34 +107,35 @@ def plot_codebook_usage(model, memory, log_dir, epoch, seed, batch_size=5000, us
     plt.xlabel("Codebook Index")
     plt.ylabel("Usage Count")
     plt.title("VQ-VAE Codebook Usage")
-    path = f"{log_dir}/seed_{seed}/Codebook_Usage_epoch_{epoch}"
+    path = f"{log_dir}/Codebook_Usage/Codebook_Usage_epoch_{epoch}"
     plt.savefig(path)
     plt.close()
 
-def plot_usage_log(usage_log, log_dir, seed):
-    plt.plot(*zip(usage_log))
+def plot_usage_log(usage_log, log_dir):
+    plt.figure()
+    plt.plot(*zip(*usage_log))
     plt.title("Unique Codebook Indices Used Over Time")
     plt.xlabel("Epochs")
-    plt.ylabel("Used Codes")
-    plt.savefig(f"{log_dir}/seed_{seed}/codebook_usage_over_time.png") 
+    plt.ylabel("Number of Used Codes")
+    plt.savefig(f"{log_dir}/codebook_usage_over_time.png") 
 
-def plot_N_sa_histogram(N_sa, log_dir, epoch, seed):
+def plot_N_sa_histogram(N_sa, log_dir, epoch):
     counts = list(N_sa.values())
     plt.figure(figsize=(10, 5))
     plt.bar(list(range(len(counts))), counts)
     plt.xlabel("Visit Count per (s, a)")
     plt.ylabel("Frequency")
     plt.title("Histogram of N_sa Visit Counts")
-    path = f"{log_dir}/seed_{seed}/N_sa_Histogram_epoch_{epoch}"
+    path = f"{log_dir}/N_sa_Histograms/N_sa_Histogram_epoch_{epoch}"
     plt.savefig(path)
     plt.yscale('log')
     plt.close()
 
-def plot_N_sa_heatmap(mdp, epoch, log_dir, seed):
+def plot_N_sa_heatmap(mdp, epoch, log_dir):
     N_sa_matrix = np.zeros((mdp.num_states, mdp.num_actions))
     for (s, a), count in mdp.N_sa.items():
         if s not in mdp.state2idx:
-            log("[WARNING], (s, a)-pair not in mdp.state2idx")
+            log(log_dir, "[WARNING], (s, a)-pair not in mdp.state2idx", console_log=True, no_log=True)
             continue
         i = mdp.state2idx[s]
         N_sa_matrix[i, a] = count
@@ -144,6 +145,6 @@ def plot_N_sa_heatmap(mdp, epoch, log_dir, seed):
     plt.ylabel("Latent Code Index (z)")
     plt.title(f"N_sa Visit Counts - Epoch {epoch}")
     plt.tight_layout()
-    path = f"{log_dir}/seed_{seed}/N_sa_heatmap_epoch_{epoch}.png"
+    path = f"{log_dir}/N_sa_HeatMaps/N_sa_heatmap_epoch_{epoch}.png"
     plt.savefig(path)
     plt.close()

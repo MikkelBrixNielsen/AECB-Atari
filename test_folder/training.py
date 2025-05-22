@@ -113,32 +113,34 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
 
         recon_loss_list.append(recon_loss.item())
         vq_loss_list.append(vq_loss.item())
-        entropy_bonus_list.append(eb)
-        usage_penalty_list.append(up)
+        entropy_bonus_list.append(eb.item())
+        usage_penalty_list.append(up.item())
 
         VC.GD_steps_done += 1
+        VC.entropy_bonus = eb
+        VC.usage_penalty = up
         log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Usage Penalty: {up:.4f}, Entropy Bonus: {eb:.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
         # log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
-        if iteration >= max_iterations  or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
+        if iteration >= max_iterations or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
             break
 
     log(log_dir, f"\tModel training completed in: {time.time() - ast}", console_log=True, no_log=True)
     return recon_loss_list, vq_loss_list, entropy_bonus_list, usage_penalty_list
 
-def initial_model_training(memory, args, epoch, seed, log_dir, device, usage_log=None):
+def initial_model_training(memory, args, epoch, log_dir, device, usage_log=None):
     model = VQVAE().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     loss = train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=args.initial_iterations, batch_size=args.batch_size, N=args.initial_iterations)
-    torch.save(model, os.path.join(os.path.join(log_dir, f"seed_{seed}"), f'model{epoch}.pth'))
-    plot_input_vs_recon(model, memory, args, epoch, log_dir, seed)
-    plot_codebook_usage(model, memory, log_dir, epoch, seed, usage_log=usage_log)
+    torch.save(model, os.path.join(os.path.join(log_dir, "Models"), f'model{epoch}.pth'))
+    plot_input_vs_recon(model, memory, args, epoch, log_dir)
+    plot_codebook_usage(model, memory, log_dir, epoch, usage_log=usage_log)
     return model, optimizer, loss
 
-def additional_model_training(model, optimizer, memory, args, epoch, seed, log_dir, usage_log=None, newest_half=False):
+def additional_model_training(model, optimizer, memory, args, epoch, log_dir, usage_log=None, newest_half=False):
     loss = train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=args.max_iterations, batch_size=args.batch_size, newest_half=newest_half)
-    torch.save(model, os.path.join(os.path.join(log_dir, f"seed_{seed}"), f'model{epoch}.pth'))
-    plot_input_vs_recon(model, memory, args, epoch, log_dir, seed)
-    plot_codebook_usage(model, memory, log_dir, epoch, seed, usage_log=usage_log)
+    torch.save(model, os.path.join(os.path.join(log_dir, "Models"), f'model{epoch}.pth'))
+    plot_input_vs_recon(model, memory, args, epoch, log_dir)
+    plot_codebook_usage(model, memory, log_dir, epoch, usage_log=usage_log)
     return loss
 
 def get_fire_action(env, fire_action=[]):
@@ -150,40 +152,46 @@ def get_fire_action(env, fire_action=[]):
             fire_action.append(i)
             return fire_action[0]
     
-def eval_planner(mdp, args, video, seed, device, epoch, log_dir):
-    log(log_dir, "\tEvaluating Model...", console_log=True, no_log=True)
-    env, action_space, s, _ = create_env(args.env_name, seed=seed, video=video) # Already wrappped, produces gray scaled (84, 84) frames
-    s = torch.from_numpy(s).to(device) # (84, 84)
-    frame_stack = deque([s] * 4, maxlen=4) # (4, 84, 84)
+def eval_planner(mdp, args, video, seeds, device, epoch, log_dir, num_runs=3):
+    avg_total_rewards = []
+    for seed in seeds:
+        log(log_dir, f"\tEvaluating model for seed {seed}...", console_log=True, no_log=True)
+        avg_run_reward = 0
+        for _ in range(num_runs):
+            env, action_space, s, _ = create_env(args.env_name, seed=seed, video=video) # Already wrappped, produces gray scaled (84, 84) frames
+            s = torch.from_numpy(s).to(device) # (84, 84)
+            frame_stack = deque([s] * 4, maxlen=4) # (4, 84, 84)
 
-    total_reward = 0
-    steps = 0
-    st = time.time()
-    while True:
-        s = torch.stack(list(frame_stack), dim=0) # (4, 84, 84)
-        a = mdp.get_action(s, action_space)
-        s, r, term, trun, info = env.step(a)
-        s = torch.from_numpy(s).to(device) # (84, 84)
-        frame_stack.append(s) # (4, 84, 84)
-        
-        total_reward += r
-        steps += 1
-        lives = info["lives"]
-        log(log_dir, f"\t\tSteps Taken: {steps}, Action: {a}, Total Reward: {total_reward}, Lives: {lives}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
-        if term or trun:
-            if info['lives'] == 0:
-                break
-            else:
-                s, _, _, _, _ = env.step(get_fire_action(env))
+            total_reward = 0
+            steps = 0
+            st = time.time()
+            while True:
+                s = torch.stack(list(frame_stack), dim=0) # (4, 84, 84)
+                a = mdp.get_action(s, action_space)
+                s, r, term, trun, info = env.step(a)
                 s = torch.from_numpy(s).to(device) # (84, 84)
-                frame_stack = deque([s]*4, maxlen=4) # reset framebuffer
+                frame_stack.append(s) # (4, 84, 84)
 
-    path = os.path.join(f"seed_{seed}", f"eval_epoch_{epoch}_reward_{total_reward}.mp4")
-    video.save(path)
-    video.reset()
-    env.close()
-    log(log_dir, f"\tEvaluation completed in: {time.time() - st:.4f}, Total Reward: {total_reward}", console_log=True, no_log=True)
-    return total_reward
+                total_reward += r
+                steps += 1
+                lives = info["lives"]
+                log(log_dir, f"\t\tSteps Taken: {steps}, Action: {a}, Total Reward: {total_reward}, Lives: {lives}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
+                if term or trun:
+                    if info['lives'] == 0:
+                        break
+                    else:
+                        s, _, _, _, _ = env.step(get_fire_action(env))
+                        s = torch.from_numpy(s).to(device) # (84, 84)
+                        frame_stack = deque([s]*4, maxlen=4) # reset framebuffer
+
+            path = os.path.join(f"seed_{seed}", f"eval_epoch_{epoch}_reward_{total_reward}.mp4")
+            video.save(path)
+            video.reset()
+            env.close()
+            avg_run_reward += total_reward / num_runs
+        avg_total_rewards.append(avg_run_reward)
+        log(log_dir, f"\tEvaluation for seed {seed} completed in: {time.time() - st:.4f}, Total Reward: {total_reward}", console_log=True, no_log=True)
+    return tuple(avg_total_rewards)
 
 def select_action(mdp, action_space, obs, num_envs, disable_eps_greedy=False):
     if not disable_eps_greedy:
@@ -225,12 +233,12 @@ def collect_transitions(mdp, game, memory, args, device, log_dir, episode_reward
             if dones[i].item():
                 completed_episodes += 1
                 stacked_obs[i] = reset_or_fire(envs, i, infos, device, frame_stacks)
-
-        total_avg_reward += sum(r.item() for r in rewards)
+        
+        total_avg_reward += sum(r.item() for r in rewards) / num_envs
         steps += 1*num_envs
 
-    total_reward_list.append(total_avg_reward / num_envs)
-    eps_thres = VC.eps_threshold if not disable_eps_greedy else "None"
+    total_reward_list.append(total_avg_reward)
+    eps_thres = VC.eps_threshold if not disable_eps_greedy else "Disabled"
     log(log_dir, f"\tTransitions collected in: {time.time() - st:.4f}, Total Steps: {len(transitions)}, Epsilon: {eps_thres}", console_log=True, no_log=True)
     episode_reward_list += total_reward_list
     envs.close()

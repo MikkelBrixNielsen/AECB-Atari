@@ -57,7 +57,7 @@ class MDP:
             total = self.N_sa[(s, a)]
             if total < self.M:
                 self.P[s_idx, a, s_idx] = 1.0
-                self.R[s_idx, a] = self.R_max
+                self.R[s_idx, a] = self.R_max / total
                 self.D[s_idx, a] = 1 if self.terminal_counts[(s, a)] / max(1, total) > 0.5 else 0
                 continue
             for sp, count in self.N_sas[(s, a)].items():

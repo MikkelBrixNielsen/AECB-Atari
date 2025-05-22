@@ -1,9 +1,9 @@
 import torch
 import time
 from utils import MemoryBuffer, VideoRecorder, VC
-from utils import create_log_dir, create_argparser, log
+from utils import create_log_dir, create_argparser, append_loss, log
 from training import warmup, initial_model_training, additional_model_training, eval_planner, collect_transitions
-from plotting import plot_model_loss, plot_planner_reward, plot_N_sa_histogram, plot_usage_log, plot_N_sa_heatmap
+from plotting import plot_model_loss, plot_planner_reward, plot_episodic_reward, plot_N_sa_histogram, plot_usage_log, plot_N_sa_heatmap
 from mdp import MDP
 
 # SEEDS = [862559, 454354, 737532, 275105, 523498]
@@ -14,43 +14,36 @@ if ARGS.debug:
     VC.enable()
 LOG_DIR, LOG_PATH = create_log_dir(ARGS, SEEDS)
 
-def append_loss(target_list, loss_list):
-    for target, values in zip(target_list, loss_list):
-        target += values
-
 def main():
-    for seed in SEEDS:
-        log(LOG_DIR, f"seed: {seed}, arguments: {ARGS}".replace("Namespace", ""))
-        usage_log, recon_loss_list, vq_loss_list, eval_reward_list, episode_reward_list = [], [], [], [], []
-        memory, video = MemoryBuffer(50000), VideoRecorder(LOG_DIR)
-        warmup(ARGS.env_name, memory, DEVICE, LOG_DIR, ARGS.warmup)
-        model, optimizer, loss = initial_model_training(memory, ARGS, 0, seed, LOG_DIR, DEVICE, usage_log)
-        append_loss([recon_loss_list, vq_loss_list, eval_reward_list, episode_reward_list], loss)
-        mdp = MDP(model, DEVICE, LOG_DIR, min_visits=ARGS.min_visits)
+    log(LOG_DIR, f"seeds: {SEEDS}, arguments: {ARGS}".replace("Namespace", ""))
+    usage_log, recon_loss_list, vq_loss_list, usage_penalty_list, entropy_bonus_list, eval_reward_list, episode_reward_list = [], [], [], [], [], [], []
+    memory, video = MemoryBuffer(50000), VideoRecorder(LOG_DIR)
+    warmup(ARGS.env_name, memory, DEVICE, LOG_DIR, ARGS.warmup)
+    model, optimizer, loss = initial_model_training(memory, ARGS, 0, LOG_DIR, DEVICE, usage_log)
+    append_loss([recon_loss_list, vq_loss_list, entropy_bonus_list, usage_penalty_list], loss)
+    mdp = MDP(model, DEVICE, LOG_DIR, min_visits=ARGS.min_visits)
 
-        transitions = memory.get_all()
-        for epoch in range(ARGS.epoch):
-            st = time.time()
-            mdp.update(transitions)
-            mdp.solve()
-            if epoch % ARGS.eval_cycle == 0:
-                eval_reward_list.append(eval_planner(mdp, ARGS, video, seed, DEVICE, epoch, LOG_DIR))
-                plot_N_sa_histogram(mdp.N_sa, LOG_DIR, epoch, seed)
-                plot_N_sa_heatmap(mdp, epoch, LOG_DIR, seed)
-            transitions = collect_transitions(mdp, ARGS.env_name, memory, ARGS, DEVICE, LOG_DIR, episode_reward_list, num_envs=ARGS.num_envs, disable_eps_greedy=False)
+    transitions = memory.get_all()
+    for epoch in range(ARGS.epoch):
+        st = time.time()
+        mdp.update(transitions)
+        mdp.solve()
+        if epoch % ARGS.eval_cycle == 0:
+            eval_reward_list.append(eval_planner(mdp, ARGS, video, SEEDS, DEVICE, epoch, LOG_DIR))
+            plot_N_sa_histogram(mdp.N_sa, LOG_DIR, epoch)
+            plot_N_sa_heatmap(mdp, epoch, LOG_DIR)
+        transitions = collect_transitions(mdp, ARGS.env_name, memory, ARGS, DEVICE, LOG_DIR, episode_reward_list, num_envs=ARGS.num_envs, disable_eps_greedy=False)
 
-            if epoch % ARGS.VQVAE_cycle == 0:
-                additional_model_training(model, optimizer, memory, ARGS, epoch, seed, LOG_DIR, usage_log, newest_half=True)
+        if epoch % ARGS.VQVAE_cycle == 0:
+            loss = additional_model_training(model, optimizer, memory, ARGS, epoch, LOG_DIR, usage_log, newest_half=True)
+            append_loss([recon_loss_list, vq_loss_list, entropy_bonus_list, usage_penalty_list], loss)
+        
+        log(LOG_DIR, f"Epoch: {epoch}, Duration: {time.time() - st:.4f}", console_log=True, show_steps=True, show_eps=True, show_codebook_usage=True, show_transition_percentage=True, show_training_data=True)
 
-            # if epoch % ARGS.MDP_cycle == 0:
-            #     mdp = MDP(model, DEVICE, LOG_DIR, min_visits=ARGS.min_visits)
-            #     transitions = memory.get_all()
-            
-            log(LOG_DIR, f"Epoch: {epoch}, Duration: {time.time() - st:.4f}", console_log=True, show_steps=True, show_eps=True, show_codebook_usage=True, show_transition_percentage=True)
-
-        plot_model_loss(recon_loss_list, vq_loss_list, seed, LOG_DIR)
-        plot_planner_reward(episode_reward_list, eval_reward_list, seed, LOG_DIR)
-        plot_usage_log(usage_log)
+    plot_model_loss(recon_loss_list, vq_loss_list, usage_penalty_list, entropy_bonus_list, LOG_DIR)
+    plot_episodic_reward(episode_reward_list, LOG_DIR)
+    plot_planner_reward(list(zip(*eval_reward_list)), LOG_DIR, [str(seed) for seed in SEEDS])
+    plot_usage_log(usage_log, LOG_DIR)
 
 if __name__ == "__main__":
     main()
@@ -60,8 +53,7 @@ if __name__ == "__main__":
         # reinitialize dead codes
         # increase commitment cost
 # TODO: Get model to recognize ball
-# TODO: Make model compress images to 7x7 again
-# 
+# TODO: Give model fewer layers
 
 # TODO: Evaluate over multiple seeds
 # TODO: Plot evaluation as a funciton of VC.GD_steps_done (i.e. gradient steps done)

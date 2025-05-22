@@ -6,9 +6,7 @@ class Encoder(nn.Module):
     def __init__(self, in_channels=4, hidden_channels=64, latent_dim=16):
         super().__init__()
         self.net = nn.Sequential(                                                 # input: (bs, in_channels, 84, 84)
-            nn.Conv2d(in_channels, hidden_channels, kernel_size=3, stride=1, padding=1), # (bs, hidden_channels, 84, 84)
-            nn.ReLU(),
-            nn.Conv2d(hidden_channels, hidden_channels, kernel_size=4, stride=2, padding=1), # (bs, hidden_channels, 42, 42)
+            nn.Conv2d(in_channels, hidden_channels, kernel_size=4, stride=2, padding=1), # (bs, hidden_channels, 42, 42)
             nn.ReLU(),
             nn.Conv2d(hidden_channels, hidden_channels, kernel_size=4, stride=2, padding=1), # (bs, hidden_channels, 21, 21)
             nn.ReLU(),
@@ -74,7 +72,7 @@ class VectorQuantizer(nn.Module):
         return quantized, loss, indices.view(x.shape[0], x.shape[2], x.shape[3])
 
 class VQVAE(nn.Module):
-    def __init__(self, channels=4, latent_dim=4, num_embeddings=12, hidden_channels=64, commitment_cost=0.8):
+    def __init__(self, channels=4, latent_dim=2, num_embeddings=12, hidden_channels=64, commitment_cost=0.4):
         super().__init__()
         self.encoder = Encoder(channels, hidden_channels, latent_dim)
         self.quantizer = VectorQuantizer(num_embeddings, latent_dim, commitment_cost)

@@ -13,6 +13,8 @@ class ValueContainer():
         self.eps_threshold = 1
         self.steps_done = 0
         self.GD_steps_done = 0
+        self.entropy_bonus = 0
+        self.usage_penalty = 0
         self.codebook_usage = "Not defined"
         self.transition_percentage = "Not defined"
         self.write_mode = "w"
@@ -84,7 +86,7 @@ class MemoryBuffer:
 
 def create_argparser(): # modified from previous project
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env-name', default="breakout", type=str, choices=["breakout", "tennis", "space_invaders", "boxing", "pong"], help="env name")
+    parser.add_argument('--env-name', default="breakout", type=str, choices=["breakout", "tennis", "space_invaders", "boxing", "pong", "freeway"], help="env name")
     parser.add_argument('--lr', default=2e-4, type=float, help="learning rate")
     parser.add_argument('--epoch', default=10001, type=int, help="number of training epoch")
     parser.add_argument('--batch-size', default=32, type=int, help="batch size")
@@ -101,20 +103,26 @@ def create_argparser(): # modified from previous project
     parser.add_argument('--debug', action='store_true', help="Enable debug mode")
     return parser.parse_args()
 
+def append_loss(target_list, loss_list):
+    for target, values in zip(target_list, loss_list):
+        target += values
+
+def _mkdir(path):
+    os.makedirs(path, exist_ok=True)
+
 def create_log_dir(args, seeds):
     log_dir = os.path.join(f"log_{args.env_name}", "VQ_VAE")
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-    
+    _mkdir(log_dir)
+    _mkdir(os.path.join(log_dir, "N_sa_HeatMaps"))
+    _mkdir( os.path.join(log_dir, "N_sa_Histograms"))
+    _mkdir( os.path.join(log_dir, "Models"))
+    _mkdir( os.path.join(log_dir, "Codebook_Usage"))
     for seed in seeds:
-        subdir = os.path.join(log_dir, f"seed_{seed}")
-        if not os.path.exists(subdir):
-            os.makedirs(subdir)
-
+        _mkdir(os.path.join(log_dir, f"seed_{seed}"))
     log_path = os.path.join(log_dir, "log.txt")
     return log_dir, log_path
 
-def log(log_dir, message, console_log=False, show_steps=False, show_eps=False, show_codebook_usage=False, show_transition_percentage=False, no_log=False):
+def log(log_dir, message, console_log=False, show_steps=False, show_eps=False, show_codebook_usage=False, show_transition_percentage=False, no_log=False, show_training_data=False):
     if show_steps:
         message = message + f", Steps done w/o warmup: {VC.steps_done}"
     if show_eps:
@@ -123,6 +131,8 @@ def log(log_dir, message, console_log=False, show_steps=False, show_eps=False, s
         message = message + f", {VC.codebook_usage}"
     if show_transition_percentage:
         message = message + f", {VC.transition_percentage}"
+    if show_training_data:
+        message = message + f", Usage penalty: {VC.usage_penalty}, Entropy bonus: {VC.entropy_bonus}"
     if console_log:
         print(message)
     if no_log:
@@ -138,7 +148,8 @@ def get_env(game):
         "tennis": "TennisNoFrameskip-v4",
         "space_invaders": "SpaceInvadersNoFrameskip-v4",
         "boxing": "BoxingNoFrameskip-v4",
-        "pong": "PongNoFrameskip-v4"
+        "pong": "PongNoFrameskip-v4",
+        "freeway": "FreewayNoFrameskip-v4",
     }
     return game_envs.get(game, "BreakoutNoFrameskip-v4")
 
