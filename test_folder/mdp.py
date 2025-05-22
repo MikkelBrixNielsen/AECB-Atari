@@ -125,7 +125,7 @@ class MDP:
             f"Unique codes used: {len(self.unique_codes_used)}, " +
             f"{VC.transition_percentage}, " +
             f"#(s, a)-pairs: {len(self.N_sa)}, " +
-            f"#states: {self.num_states} - ({s_states, sp_states}), " +
+            f"#states: {self.num_states} - {s_states, sp_states}, " +
             f"#actions: {self.num_actions}", 
             console_log=True, no_log=True)
 

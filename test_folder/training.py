@@ -10,7 +10,7 @@ import numpy as np
 import random
 
 from plotting import plot_codebook_usage, plot_input_vs_recon
-from utils import VC, create_vectorized_envs, log, sample_memory, create_eval_env
+from utils import VC, create_vectorized_envs, log, sample_memory, create_env
 from model import VQVAE
 
 EPS_START, EPS_END, EPS_DECAY = 1, 0.05, 150000
@@ -88,7 +88,7 @@ def entropy_bonus(probs, scale=0.05):
 def usage_penalty(model, probs, scale=0.05):
     return scale * F.kl_div((probs + 1e-8).log(), torch.full_like(probs, 1.0 / model.quantizer.num_embeddings), reduction='sum')
 
-def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_size=32, theta=5e-4, N=500):
+def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_size=32, theta=5e-4, N=500, newest_half=False):
     ast = time.time()
     log(log_dir, "\tTraining Model...", console_log=True, no_log=True)
     recon_loss_list, vq_loss_list, entropy_bonus_list, usage_penalty_list = [], [], [], []
@@ -98,7 +98,7 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
     for iteration in count():
         st = time.time()
 
-        x, _, _, _, _ = sample_memory(memory, batch_size)
+        x, _, _, _, _ = sample_memory(memory, batch_size, newest_half=newest_half)
         z_q, vq_loss, probs = estimate_codebook_usage_probs(model, x)
         x_r = model.decoder(z_q)
         eb = entropy_bonus(probs)
@@ -119,7 +119,7 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
         VC.GD_steps_done += 1
         log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Usage Penalty: {up:.4f}, Entropy Bonus: {eb:.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
         # log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
-        if iteration >= (max_iterations * len(memory) / batch_size)  or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
+        if iteration >= max_iterations  or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
             break
 
     log(log_dir, f"\tModel training completed in: {time.time() - ast}", console_log=True, no_log=True)
@@ -134,8 +134,8 @@ def initial_model_training(memory, args, epoch, seed, log_dir, device, usage_log
     plot_codebook_usage(model, memory, log_dir, epoch, seed, usage_log=usage_log)
     return model, optimizer, loss
 
-def additional_model_training(model, optimizer, memory, args, epoch, seed, log_dir, usage_log=None):
-    loss = train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=args.max_iterations, batch_size=args.batch_size)
+def additional_model_training(model, optimizer, memory, args, epoch, seed, log_dir, usage_log=None, newest_half=False):
+    loss = train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=args.max_iterations, batch_size=args.batch_size, newest_half=newest_half)
     torch.save(model, os.path.join(os.path.join(log_dir, f"seed_{seed}"), f'model{epoch}.pth'))
     plot_input_vs_recon(model, memory, args, epoch, log_dir, seed)
     plot_codebook_usage(model, memory, log_dir, epoch, seed, usage_log=usage_log)
@@ -152,7 +152,7 @@ def get_fire_action(env, fire_action=[]):
     
 def eval_planner(mdp, args, video, seed, device, epoch, log_dir):
     log(log_dir, "\tEvaluating Model...", console_log=True, no_log=True)
-    env, action_space, s, _ = create_eval_env(args.env_name, seed=seed, video=video) # Already wrappped, produces gray scaled (84, 84) frames
+    env, action_space, s, _ = create_env(args.env_name, seed=seed, video=video) # Already wrappped, produces gray scaled (84, 84) frames
     s = torch.from_numpy(s).to(device) # (84, 84)
     frame_stack = deque([s] * 4, maxlen=4) # (4, 84, 84)
 
@@ -208,7 +208,7 @@ def collect_transitions(mdp, game, memory, args, device, log_dir, episode_reward
     stacked_obs = torch.stack([torch.stack(list(fs), dim=0) for fs in frame_stacks]) # (num_envs, 4, 84, 84)
 
     steps, total_avg_reward, completed_episodes = 0, 0, 0
-    while completed_episodes < args.episodes: # steps < args.transitions
+    while steps < args.transitions: #  completed_episodes < args.episodes
         actions = select_action(mdp, action_space, stacked_obs, num_envs, disable_eps_greedy=disable_eps_greedy) # (num_evns, )
         next_obs, rewards, terms, truncs, infos = envs.step(actions)
         next_obs = preprocess_frames(next_obs, device) # (num_envs, 84, 84)

@@ -67,17 +67,14 @@ class MemoryBuffer:
             self.memory[self.ptr % self.size] = Transition(*args)
         self.ptr += 1
 
-    def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
-
-    def sample_recent(self, batch_size, mrp=0.8):
-        num = min(len(self.memory), batch_size)
-        offset = self.ptr - num*mrp
-        recent_sample = self.memory[max(0, offset) : self.ptr]
-        if offset < 0:
-            recent_sample += self.memory[self.length + offset:]
-        random_sample = random.sample(self.memory[self.ptr % self.length : self.length + min(0, offset)], num - num*mrp)
-        return random_sample + recent_sample 
+    def sample(self, batch_size, newest_half=False): # newest_half=True samples newest half of frames if more than half of the buffer is filled
+        if newest_half and self.length > self.size // 2:
+            curr_idx = self.ptr % self.size
+            offset = curr_idx - self.size // 2
+            buffer = self.memory[max(0, offset) : curr_idx] + self.memory[self.length + min(0, offset):]
+        else:
+            buffer = self.memory 
+        return random.sample(buffer, batch_size)
 
     def get_all(self):
         return self.memory
@@ -100,6 +97,7 @@ def create_argparser(): # modified from previous project
     parser.add_argument('--initial-iterations', default=10000, type=int, help="number of iterations VQVAE does in epoch 0")
     parser.add_argument('--warmup', default=10000, type=int, help="number of warmup transitions to collect")
     parser.add_argument('--min-visits', default=1, type=int, help="times (s,a)-pair has to be visited to be considered known")
+    parser.add_argument('--num_envs', default=1, type=int, help="Number of envs used to collect episodes and during warmup")
     parser.add_argument('--debug', action='store_true', help="Enable debug mode")
     return parser.parse_args()
 
@@ -144,7 +142,7 @@ def get_env(game):
     }
     return game_envs.get(game, "BreakoutNoFrameskip-v4")
 
-def create_eval_env(game, seed=None, video=None): # from previous project
+def create_env(game, seed=None, video=None): # from previous project
     env = gym.make(get_env(game))
     env = AtariWrapper(env) if not video else AtariWrapper(env, video=video)
     obs, info = env.reset(seed=seed) if seed is not None else env.reset()
@@ -169,5 +167,5 @@ def extract_and_batch(transitions):
             torch.cat(batch.done).unsqueeze(1), # done_batch (bs, 1)
     )
 
-def sample_memory(memory, batch_size):
-   return extract_and_batch(memory.sample(batch_size))
+def sample_memory(memory, batch_size, newest_half=False):
+   return extract_and_batch(memory.sample(batch_size, newest_half=newest_half))

@@ -37,15 +37,16 @@ def main():
                 eval_reward_list.append(eval_planner(mdp, ARGS, video, seed, DEVICE, epoch, LOG_DIR))
                 plot_N_sa_histogram(mdp.N_sa, LOG_DIR, epoch, seed)
                 plot_N_sa_heatmap(mdp, epoch, LOG_DIR, seed)
-            transitions = collect_transitions(mdp, ARGS.env_name, memory, ARGS, DEVICE, LOG_DIR, episode_reward_list, num_envs=6, disable_eps_greedy=False)
-            log(LOG_DIR, f"Epoch: {epoch}, Duration: {time.time() - st:.4f}", console_log=True, show_steps=True, show_eps=True, show_codebook_usage=True, show_transition_percentage=True)
+            transitions = collect_transitions(mdp, ARGS.env_name, memory, ARGS, DEVICE, LOG_DIR, episode_reward_list, num_envs=ARGS.num_envs, disable_eps_greedy=False)
 
             if epoch % ARGS.VQVAE_cycle == 0:
-                additional_model_training(model, optimizer, memory, ARGS, epoch, seed, LOG_DIR, usage_log)
+                additional_model_training(model, optimizer, memory, ARGS, epoch, seed, LOG_DIR, usage_log, newest_half=True)
 
             # if epoch % ARGS.MDP_cycle == 0:
             #     mdp = MDP(model, DEVICE, LOG_DIR, min_visits=ARGS.min_visits)
             #     transitions = memory.get_all()
+            
+            log(LOG_DIR, f"Epoch: {epoch}, Duration: {time.time() - st:.4f}", console_log=True, show_steps=True, show_eps=True, show_codebook_usage=True, show_transition_percentage=True)
 
         plot_model_loss(recon_loss_list, vq_loss_list, seed, LOG_DIR)
         plot_planner_reward(episode_reward_list, eval_reward_list, seed, LOG_DIR)
@@ -54,10 +55,18 @@ def main():
 if __name__ == "__main__":
     main()
 
-# TODO: Do pooling in encoder / adapt decoder to deal with this 
+
+# TODO: Try an get more even codebook usage
+        # reinitialize dead codes
+        # increase commitment cost
+# TODO: Get model to recognize ball
+# TODO: Make model compress images to 7x7 again
+# 
+
 # TODO: Evaluate over multiple seeds
 # TODO: Plot evaluation as a funciton of VC.GD_steps_done (i.e. gradient steps done)
 
-# env_name='breakout', lr=0.0002, epoch=2500, batch_size=32, eval_cycle=10, transitions=2500, VQVAE_cycle=1000, MDP_cycle=1000, max_iterations=3, initial_iterations=5, warmup=10000, min_visits=25, debug=False)
-# - try min_visits = 15 / 10 / 5 (25 explored very slowly)
-# - try VQVAE og MDP cycle = 100 ?
+# Most promissing
+# Model params: latent_dim=4, num_embeddings=8, hidden_channels=64, commitment_cost=0.4
+                # Encoder 84x84 -> 11x11, decoder 11x11 -> 84x84
+# Program arguments: (env_name='breakout', lr=0.0002, epoch=2500, batch_size=32, eval_cycle=5, transitions=5000, episodes=2500, VQVAE_cycle=5, MDP_cycle=1000, max_iterations=2000, initial_iterations=15000, warmup=10000, min_visits=1, num_envs=6, debug=False)
