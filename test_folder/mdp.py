@@ -55,15 +55,15 @@ class MDP:
             s_idx = self.state2idx[s]
             total = self.N_sa[(s, a)]
             if total < self.M:
-                self.P[s_idx, a, s_idx] = 1.0
-                self.R[s_idx, a] = self.R_max / total
-                self.D[s_idx, a] = 1 if self.terminal_counts[(s, a)] / max(1, total) > 0.5 else 0
+                self.P[s_idx, a, :] = 1.0 / self.num_states # uniform probability to all states
+                self.R[s_idx, a] = self.R_max
+                self.D[s_idx, a] = 0 # Assume non-terminal state
                 continue
             for sp, count in self.N_sas[(s, a)].items():
                 sp_idx = self.state2idx[sp]
                 self.P[s_idx, a, sp_idx] = count / total
             self.R[s_idx, a] = self.rewards_sum[(s, a)] / total
-            self.D[s_idx, a] = self.terminal_counts[(s, a)] / total
+            self.D[s_idx, a] = (self.terminal_counts[(s, a)] / total) > 0.5
 
         self.dirty.clear()
         log(self.log_dir, f"\t\tCompleted calculating P, R, D in {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
@@ -80,8 +80,8 @@ class MDP:
     
     def _encode_state(self, z_indices):
         hist = torch.bincount(z_indices.view(-1), minlength=self.model.quantizer.num_embeddings)
-        # return tuple(hist.tolist()) # preserves frequency
-        return tuple((hist > 0).int().tolist()) # simpler, less states
+        return tuple(hist.tolist()) # preserves frequency
+        # return tuple((hist > 0).int().tolist()) # simpler, less states
 
     def _add_transition(self, z, a, z_next, r, done):
         s = self._encode_state(z)

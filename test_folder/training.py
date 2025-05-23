@@ -88,6 +88,12 @@ def entropy_bonus(probs, scale=0.05):
 def usage_penalty(model, probs, scale=0.05):
     return scale * F.kl_div((probs + 1e-8).log(), torch.full_like(probs, 1.0 / model.quantizer.num_embeddings), reduction='sum')
 
+def avg_loss(loss, samples, N):
+   return sum(loss[-N:-N + samples]) / samples
+
+def moving_averaged_loss(recon_loss_list, vq_loss_list, entropy_bonus_list, usage_penalty_list, N, samples=100):
+    return avg_loss(recon_loss_list, samples, N) + avg_loss(vq_loss_list, samples, N) + avg_loss(entropy_bonus_list, samples, N) + avg_loss(usage_penalty_list, samples, N)
+
 def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_size=32, theta=5e-4, N=500, newest_half=False):
     ast = time.time()
     log(log_dir, "\tTraining Model...", console_log=True, no_log=True)
@@ -121,7 +127,7 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
         VC.usage_penalty = up
         log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Usage Penalty: {up:.4f}, Entropy Bonus: {eb:.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
         # log(log_dir, f"\t\tTraining Round: {iteration}, Recon Loss: {recon_loss.item():.4f}, VQ Loss: {vq_loss.item():.4f}, Duration: {time.time() - st:.4f}", console_log=VC.debug_mode, no_log=True)
-        if iteration >= max_iterations or (len(vq_loss_list) > N and (abs(recon_loss_list[-N] + vq_loss_list[-N] - loss.item()) < theta)): # if max iterations reached or loss does not improve => break
+        if iteration >= max_iterations or (len(vq_loss_list) > N and abs(moving_averaged_loss(recon_loss_list, vq_loss_list, entropy_bonus_list, usage_penalty_list, N) - loss.item) < theta): # if max iterations reached or loss does not improve => break
             break
 
     log(log_dir, f"\tModel training completed in: {time.time() - ast}", console_log=True, no_log=True)
@@ -157,7 +163,7 @@ def eval_planner(mdp, args, video, seeds, device, epoch, log_dir, num_runs=3):
     for seed in seeds:
         log(log_dir, f"\tEvaluating model for seed {seed}...", console_log=True, no_log=True)
         avg_run_reward = 0
-        for _ in range(num_runs):
+        for i in range(num_runs):
             env, action_space, s, _ = create_env(args.env_name, seed=seed, video=video) # Already wrappped, produces gray scaled (84, 84) frames
             s = torch.from_numpy(s).to(device) # (84, 84)
             frame_stack = deque([s] * 4, maxlen=4) # (4, 84, 84)
@@ -184,7 +190,7 @@ def eval_planner(mdp, args, video, seeds, device, epoch, log_dir, num_runs=3):
                         s = torch.from_numpy(s).to(device) # (84, 84)
                         frame_stack = deque([s]*4, maxlen=4) # reset framebuffer
 
-            path = os.path.join(f"seed_{seed}", f"eval_epoch_{epoch}_reward_{total_reward}.mp4")
+            path = os.path.join(f"seed_{seed}", f"eval_epoch_{epoch}.{i}_reward_{total_reward}.mp4")
             video.save(path)
             video.reset()
             env.close()

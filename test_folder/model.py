@@ -76,7 +76,7 @@ class VectorQuantizer(nn.Module):
         return quantized, loss, indices.view(x.shape[0], x.shape[2], x.shape[3])
 
 class VQVAE(nn.Module):
-    def __init__(self, channels=4, latent_dim=8, num_embeddings=64, hidden_channels=64, commitment_cost=0.4):
+    def __init__(self, channels=4, latent_dim=8, num_embeddings=16, hidden_channels=64, commitment_cost=0.4):
         super().__init__()
         self.encoder = Encoder(channels, hidden_channels, latent_dim)
         self.quantizer = VectorQuantizer(num_embeddings, latent_dim, commitment_cost)

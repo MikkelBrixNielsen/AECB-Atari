@@ -44,13 +44,12 @@ def main():
             plot_N_sa_heatmap(mdp, epoch, LOG_DIR)
 
         transitions = collect_transitions(mdp, ARGS.env_name, memory, ARGS, DEVICE, LOG_DIR, episode_reward_list, num_envs=ARGS.num_envs, disable_eps_greedy=False)
-
-        log(LOG_DIR, f"Epoch: {epoch}, Duration: {time.time() - st:.4f}", console_log=True, show_steps=True, show_eps=True, show_codebook_usage=True, show_transition_percentage=True, show_training_data=True)
         
         if epoch % ARGS.VQVAE_cycle == 0:
             loss = additional_model_training(model, optimizer, memory, ARGS, epoch, LOG_DIR, usage_log, newest_half=True)
             append_loss([recon_loss_list, vq_loss_list, entropy_bonus_list, usage_penalty_list], loss)
         
+        log(LOG_DIR, f"Epoch: {epoch}, Duration: {time.time() - st:.4f}", console_log=True, show_steps=True, show_eps=True, show_codebook_usage=True, show_transition_percentage=True, show_training_data=True)
 
     plot_model_loss(recon_loss_list, vq_loss_list, usage_penalty_list, entropy_bonus_list, LOG_DIR)
     plot_episodic_reward(episode_reward_list, LOG_DIR)
