@@ -101,8 +101,8 @@ def train_VQ_VAE(model, memory, optimizer, log_dir, max_iterations=10000, batch_
         x, _, _, _, _ = sample_memory(memory, batch_size, newest_half=newest_half)
         z_q, vq_loss, probs = estimate_codebook_usage_probs(model, x)
         x_r = model.decoder(z_q)
-        eb = entropy_bonus(probs)
-        up = usage_penalty(model, probs)
+        eb = entropy_bonus(probs, scale=0.2) # was 0.5
+        up = usage_penalty(model, probs, scale=2) # was 0.2
 
         recon_loss = F.mse_loss(x_r, x, reduction='sum')
         loss = recon_loss + vq_loss + up + eb

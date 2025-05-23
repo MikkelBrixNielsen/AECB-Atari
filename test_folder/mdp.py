@@ -1,6 +1,5 @@
 import torch
 import time
-import math
 from collections import defaultdict, Counter
 from utils import VC, compute_known_transition_percentage, log
 import numpy as np
@@ -74,10 +73,15 @@ class MDP:
             _, _, z_q_indices = self.model.quantizer(self.model.encoder(s_batch))
             return z_q_indices
 
-    def _encode_state(self, z):
-        if isinstance(z, torch.Tensor):
-            z = z.cpu().numpy()
-        return z.flatten().tobytes() if self.use_hash else tuple(z.flatten().tolist())
+    # def _encode_state(self, z):
+    #     if isinstance(z, torch.Tensor):
+    #         z = z.cpu().numpy()
+    #     return z.flatten().tobytes() if self.use_hash else tuple(z.flatten().tolist())
+    
+    def _encode_state(self, z_indices):
+        hist = torch.bincount(z_indices.view(-1), minlength=self.model.quantizer.num_embeddings)
+        # return tuple(hist.tolist()) # preserves frequency
+        return tuple((hist > 0).int().tolist()) # simpler, less states
 
     def _add_transition(self, z, a, z_next, r, done):
         s = self._encode_state(z)
@@ -124,7 +128,7 @@ class MDP:
         log(self.log_dir, f"\tMDP updated completed in {time.time() - ast:.4f}, " + 
             f"Unique codes used: {len(self.unique_codes_used)}, " +
             f"{VC.transition_percentage}, " +
-            f"#(s, a)-pairs: {len(self.N_sa)}, " +
+            f"#(s, a)-pairs: {len(self.N_sa.keys())}, " +
             f"#states: {self.num_states} - {s_states, sp_states}, " +
             f"#actions: {self.num_actions}", 
             console_log=True, no_log=True)
