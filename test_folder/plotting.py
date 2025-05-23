@@ -119,7 +119,7 @@ def plot_usage_log(usage_log, log_dir):
     plt.ylabel("Number of Used Codes")
     plt.savefig(f"{log_dir}/codebook_usage_over_time.png") 
 
-def plot_N_sa_histogram(N_sa, log_dir, epoch):
+def plot_N_sa_histogram(N_sa, epoch, log_dir):
     counts = list(N_sa.values())
     plt.figure(figsize=(10, 5))
     plt.bar(list(range(len(counts))), counts)
@@ -148,3 +148,11 @@ def plot_N_sa_heatmap(mdp, epoch, log_dir):
     path = f"{log_dir}/N_sa_HeatMaps/N_sa_heatmap_epoch_{epoch}.png"
     plt.savefig(path)
     plt.close()
+
+def plot_everything(mdp, epoch, recon_loss_list, vq_loss_list, usage_penalty_list, entropy_bonus_list, episode_reward_list, eval_reward_list, usage_log, log_dir, SEEDS):
+    plot_N_sa_histogram(mdp.N_sa, epoch, log_dir)
+    plot_N_sa_heatmap(mdp, epoch, log_dir)
+    plot_model_loss(recon_loss_list, vq_loss_list, usage_penalty_list, entropy_bonus_list, log_dir)
+    plot_episodic_reward(episode_reward_list, log_dir)
+    plot_planner_reward(list(zip(*eval_reward_list)), log_dir, [str(seed) for seed in SEEDS])
+    plot_usage_log(usage_log, log_dir)
