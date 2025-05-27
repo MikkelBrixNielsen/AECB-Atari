@@ -80,8 +80,8 @@ class MDP:
     
     def _encode_state(self, z_indices):
         hist = torch.bincount(z_indices.view(-1), minlength=self.model.quantizer.num_embeddings)
-        return tuple(hist.tolist()) # preserves frequency
-        # return tuple((hist > 0).int().tolist()) # simpler, less states
+        # return tuple(hist.tolist()) # preserves frequency
+        return tuple((hist > 0).int().tolist()) # simpler, less states
 
     def _add_transition(self, z, a, z_next, r, done):
         s = self._encode_state(z)
