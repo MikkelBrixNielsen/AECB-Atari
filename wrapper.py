@@ -251,7 +251,8 @@ class WarpFrame(gym.ObservationWrapper[np.ndarray, int, np.ndarray]):
         self.observation_space = spaces.Box(
             low=0,
             high=255,
-            shape=(self.height, self.width, 1),
+            # shape=(self.height, self.width, 1),
+            shape=(self.height, self.width),
             dtype=env.observation_space.dtype,  # type: ignore[arg-type]
         )
 
